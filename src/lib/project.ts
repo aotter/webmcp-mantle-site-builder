@@ -1,0 +1,284 @@
+import { compileRuntimePlan, type RuntimePlan } from '@aotter/mantle-runtime'
+import {
+  linkManifestSet,
+  parseManifestSources,
+  type Manifest,
+  type ProcedureManifest,
+  type SchemaManifest,
+  type TriggerManifest,
+  type ViewManifest,
+} from '@aotter/mantle-spec'
+import jsonPatch, { type Operation } from 'fast-json-patch'
+import { stringify } from 'yaml'
+
+export interface ProjectDocument {
+  schemas: Record<string, SchemaManifest>
+  views: Record<string, ViewManifest>
+  procedures: Record<string, ProcedureManifest>
+  triggers: Record<string, TriggerManifest>
+}
+
+export interface ProjectState {
+  draftDocument: ProjectDocument
+  draftRevision: number
+  activeDocument: ProjectDocument
+  activeRevision: number
+  activePlan: RuntimePlan
+  diagnostics: string[]
+}
+
+export const initialProjectDocument: ProjectDocument = {
+  schemas: {
+    'inventory-items': {
+      apiVersion: 'cms.mantle.aotter.net/v1',
+      kind: 'Schema',
+      metadata: { name: 'inventory-items' },
+      spec: {
+        title: 'Inventory items',
+        description: 'Items available in the generated preview.',
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['sku', 'name', 'quantity'],
+          properties: {
+            sku: { type: 'string', minLength: 1 },
+            name: { type: 'string', minLength: 1 },
+            quantity: { type: 'integer', minimum: 0 },
+          },
+        },
+        uniqueIndexes: [['sku']],
+        indexes: [['quantity']],
+        searchableFields: ['sku', 'name'],
+        lifecycle: 'operational',
+      },
+    },
+  },
+  views: {
+    inventory: {
+      apiVersion: 'cms.mantle.aotter.net/v1',
+      kind: 'View',
+      metadata: { name: 'inventory' },
+      spec: {
+        title: 'Inventory',
+        surface: 'public',
+        from: 'inventory-items',
+        fields: ['id', 'sku', 'name', 'quantity'],
+        orderBy: [{ field: 'name', direction: 'asc' }],
+        limit: 100,
+      },
+    },
+  },
+  procedures: {
+    'create-inventory-item': {
+      apiVersion: 'cms.mantle.aotter.net/v1',
+      kind: 'Procedure',
+      metadata: { name: 'create-inventory-item' },
+      spec: {
+        title: 'Create inventory item',
+        input: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['sku', 'name', 'quantity'],
+          properties: {
+            sku: { type: 'string', minLength: 1 },
+            name: { type: 'string', minLength: 1 },
+            quantity: { type: 'integer', minimum: 0 },
+          },
+        },
+        output: { type: 'object' },
+        handler: { kind: 'builtin', op: 'create', schema: 'inventory-items' },
+      },
+    },
+  },
+  triggers: {
+    'create-inventory-item-mcp': {
+      apiVersion: 'cms.mantle.aotter.net/v1',
+      kind: 'Trigger',
+      metadata: { name: 'create-inventory-item-mcp' },
+      spec: {
+        source: { kind: 'mcp', surface: 'public' },
+        target: { procedure: 'create-inventory-item' },
+      },
+    },
+  },
+}
+
+const groups = {
+  schemas: 'Schema',
+  views: 'View',
+  procedures: 'Procedure',
+  triggers: 'Trigger',
+} as const
+
+export function compileProjectDocument(document: ProjectDocument) {
+  let source: string
+  try {
+    source = projectDocumentYaml(document)
+  } catch (error) {
+    return { ok: false as const, diagnostics: [messageOf(error)] }
+  }
+
+  const parsed = parseManifestSources({ sources: [{ sourceId: 'site.yaml', text: source }] })
+  if (!parsed.ok) return { ok: false as const, diagnostics: parsed.diagnostics.map(({ message }) => message) }
+
+  const linked = linkManifestSet(parsed.value)
+  if (!linked.ok) return { ok: false as const, diagnostics: linked.diagnostics.map(({ message }) => message) }
+
+  const compiled = compileRuntimePlan(linked.value)
+  if (!compiled.ok) return { ok: false as const, diagnostics: compiled.diagnostics.map(({ message }) => message) }
+  return {
+    ok: true as const,
+    diagnostics: [...parsed.diagnostics, ...linked.diagnostics, ...compiled.diagnostics].map(({ message }) => message),
+    plan: compiled.value,
+    source,
+  }
+}
+
+export function projectDocumentYaml(document: ProjectDocument) {
+  assertProjectDocument(document)
+  const groupEntries = Object.entries(groups) as [keyof ProjectDocument, (typeof groups)[keyof ProjectDocument]][]
+  return groupEntries
+    .flatMap(([group, kind]) => (Object.entries(document[group]) as [string, Manifest][])
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, manifest]) => {
+        if (manifest.kind !== kind || manifest.metadata?.name !== name) {
+          throw new TypeError(`${group}/${name} must be a ${kind} manifest named '${name}'.`)
+        }
+        return stringify(manifest).trimEnd()
+      }))
+    .join('\n---\n') + '\n'
+}
+
+export function createProjectState(document: ProjectDocument): ProjectState {
+  const compilation = compileProjectDocument(document)
+  if (!compilation.ok) throw new Error(`Initial project is invalid: ${compilation.diagnostics.join('; ')}`)
+  return {
+    draftDocument: structuredClone(document),
+    draftRevision: 1,
+    activeDocument: structuredClone(document),
+    activeRevision: 1,
+    activePlan: compilation.plan,
+    diagnostics: compilation.diagnostics,
+  }
+}
+
+export function applyProjectPatch(state: ProjectState, baseRevision: number, patch: readonly Operation[]) {
+  if (baseRevision !== state.draftRevision) {
+    throw new Error(`Revision conflict: expected ${state.draftRevision}, received ${baseRevision}.`)
+  }
+
+  const draftDocument = applyJsonPatch(state.draftDocument, patch)
+  const draftRevision = state.draftRevision + 1
+  const compilation = compileProjectDocument(draftDocument)
+  if (!compilation.ok) {
+    return {
+      state: { ...state, draftDocument, draftRevision, diagnostics: compilation.diagnostics },
+      activated: false as const,
+      activation: null,
+    }
+  }
+
+  return {
+    state: {
+      draftDocument,
+      draftRevision,
+      activeDocument: structuredClone(draftDocument),
+      activeRevision: draftRevision,
+      activePlan: compilation.plan,
+      diagnostics: compilation.diagnostics,
+    },
+    activated: true as const,
+    activation: {
+      baseRevision: state.activeRevision,
+      revision: draftRevision,
+      patch: jsonPatch.compare(state.activeDocument, draftDocument, true),
+    },
+  }
+}
+
+export function projectStateSummary(state: ProjectState) {
+  return {
+    draftRevision: state.draftRevision,
+    activeRevision: state.activeRevision,
+    valid: state.draftRevision === state.activeRevision,
+    diagnostics: state.diagnostics,
+    atoms: {
+      schemas: Object.keys(state.activePlan.schemas).sort(),
+      views: Object.keys(state.activePlan.views).sort(),
+      procedures: Object.keys(state.activePlan.procedures).sort(),
+      triggers: Object.keys(state.activePlan.triggers).sort(),
+    },
+  }
+}
+
+export function readPatch(value: unknown): Operation[] {
+  if (!Array.isArray(value) || value.length === 0) throw new TypeError('patch must be a non-empty array.')
+  const allowed = new Set(['add', 'remove', 'replace', 'move', 'copy', 'test'])
+  for (const operation of value) {
+    if (!isRecord(operation) || typeof operation.op !== 'string' || !allowed.has(operation.op) || typeof operation.path !== 'string') {
+      throw new TypeError('Each patch operation needs a supported op and JSON Pointer path.')
+    }
+  }
+  return value as Operation[]
+}
+
+export interface PreviewState {
+  document: ProjectDocument | null
+  revision: number
+  plan: RuntimePlan | null
+}
+
+export function emptyPreviewState(): PreviewState {
+  return { document: null, revision: 0, plan: null }
+}
+
+export function applyPreviewSync(state: PreviewState, message: unknown) {
+  if (!isRecord(message)) return { kind: 'ignored' as const, state }
+  if (message.type === 'mantle:preview:snapshot') {
+    if (!Number.isInteger(message.revision) || !isRecord(message.document)) throw new TypeError('Invalid preview snapshot.')
+    assertProjectDocument(message.document)
+    return activatePreview(message.document, Number(message.revision))
+  }
+  if (message.type !== 'mantle:preview:patch') return { kind: 'ignored' as const, state }
+  if (!Number.isInteger(message.baseRevision) || !Number.isInteger(message.revision)) throw new TypeError('Invalid preview patch revision.')
+  if (!state.document || message.baseRevision !== state.revision) {
+    return {
+      kind: 'resync' as const,
+      state,
+      expectedRevision: state.revision,
+      receivedRevision: Number(message.baseRevision),
+    }
+  }
+  return activatePreview(applyJsonPatch(state.document, readPatch(message.patch)), Number(message.revision))
+}
+
+function activatePreview(document: ProjectDocument, revision: number) {
+  const compilation = compileProjectDocument(document)
+  if (!compilation.ok) return { kind: 'error' as const, diagnostics: compilation.diagnostics }
+  return {
+    kind: 'applied' as const,
+    state: { document: structuredClone(document), revision, plan: compilation.plan },
+  }
+}
+
+function applyJsonPatch<T>(document: T, patch: readonly Operation[]): T {
+  return jsonPatch.applyPatch(document, [...patch], true, false, true).newDocument
+}
+
+function assertProjectDocument(document: unknown): asserts document is ProjectDocument {
+  if (!isRecord(document)) throw new TypeError('Project document must be an object.')
+  const actual = Object.keys(document).sort()
+  const expected = Object.keys(groups).sort()
+  if (actual.join('\0') !== expected.join('\0')) throw new TypeError(`Project document must contain only ${expected.join(', ')}.`)
+  for (const group of expected) {
+    if (!isRecord(document[group])) throw new TypeError(`${group} must be an object.`)
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function messageOf(error: unknown) {
+  return error instanceof Error ? error.message : 'Invalid project document.'
+}

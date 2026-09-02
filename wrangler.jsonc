@@ -4,14 +4,17 @@
  */
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "mantle-site-builder",
+	"name": "webmcp-mantle-site-builder",
 	"main": "worker/index.ts",
-	"compatibility_date": "2026-08-31",
+	"compatibility_date": "2026-09-02",
+	"compatibility_flags": ["nodejs_compat"],
 	"assets": {
 		"not_found_handling": "single-page-application"
 	},
 	"observability": {
-		"enabled": true
+		"enabled": true,
+		"logs": { "head_sampling_rate": 1 },
+		"traces": { "enabled": true, "head_sampling_rate": 0.01 }
 	},
 	"upload_source_maps": true
 	/**
