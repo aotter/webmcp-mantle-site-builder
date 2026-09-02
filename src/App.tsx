@@ -1,11 +1,21 @@
 import { bindWebMcp, type WebMcpBinding } from '@aotter/mantle-web/webmcp'
 import { projectDeveloperConsole } from '@aotter/mantle-admin'
 import type { Operation } from 'fast-json-patch'
-import { Bot, Braces, Check, ChevronDown, Copy, FileJson2, Moon, Sparkles, Sun, X } from 'lucide-react'
+import { Bot, Braces, Check, ChevronDown, Copy, FileJson2, Moon, Plus, Sparkles, Sun, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   applyProjectPatch,
@@ -16,6 +26,15 @@ import {
   readPatch,
 } from '@/lib/project'
 import { applyStarter, getStarted, starterNames, type StarterName } from '@/lib/builder'
+import {
+  createProjectRecord,
+  listProjects,
+  removeProject,
+  saveProject,
+  selectedProjectId,
+  selectProjectId,
+  type ProjectRecord,
+} from '@/lib/project-store'
 import { publicProcedureCapability, publicViewCapability } from '@/lib/webmcp'
 
 const promptPresets = [
@@ -35,15 +54,17 @@ const hostCapabilities = [
     properties: {
       starter: { type: 'string', enum: starterNames },
       baseRevision: { type: 'integer', minimum: 1 },
+      projectName: { type: 'string', minLength: 1, maxLength: 80, description: 'A concise project name chosen by the agent.' },
       replace: { type: 'boolean', description: 'Must be true to replace a non-empty project.' },
     },
-    required: ['starter', 'baseRevision'],
+    required: ['starter', 'baseRevision', 'projectName'],
     additionalProperties: false,
   }),
   publicProcedureCapability('builder_apply_manifest_patch', 'Apply an RFC 6902 JSON Patch to the current Mantle Manifest draft.', {
     type: 'object',
     properties: {
       baseRevision: { type: 'integer', minimum: 1 },
+      projectName: { type: 'string', minLength: 1, maxLength: 80, description: 'The current concise project name, chosen by the agent.' },
       patch: {
         type: 'array',
         minItems: 1,
@@ -60,7 +81,7 @@ const hostCapabilities = [
         },
       },
     },
-    required: ['baseRevision', 'patch'],
+    required: ['baseRevision', 'projectName', 'patch'],
     additionalProperties: false,
   }),
   publicProcedureCapability('builder_call_preview_tool', 'Call a public WebMCP capability in the active site preview.', {
@@ -80,12 +101,18 @@ interface PendingPreviewCall {
 }
 
 export default function App() {
+  const [currentProject, setCurrentProject] = useState(createProjectRecord)
+  const [projects, setProjects] = useState<ProjectRecord[]>(() => [currentProject])
   const [project, setProject] = useState(() => createProjectState(initialProjectDocument))
+  const [projectsReady, setProjectsReady] = useState(false)
+  const [storageError, setStorageError] = useState('')
+  const [deleteCandidate, setDeleteCandidate] = useState<ProjectRecord | null>(null)
   const [webMcpSupported, setWebMcpSupported] = useState<boolean | null>(null)
   const [promptType, setPromptType] = useState<PromptType>('intake')
   const [brief, setBrief] = useState<string>(promptPresets[0].brief)
   const [promptCopied, setPromptCopied] = useState(false)
   const [darkMode, setDarkMode] = useState(() => document.documentElement.classList.contains('dark'))
+  const currentProjectRef = useRef(currentProject)
   const projectRef = useRef(project)
   const previewIframeRef = useRef<HTMLIFrameElement>(null)
   const adminIframeRef = useRef<HTMLIFrameElement>(null)
@@ -163,8 +190,58 @@ export default function App() {
     sendSnapshot()
   }, [sendSnapshot])
 
-  const commitPatch = useCallback((baseRevision: number, patch: readonly Operation[]) => {
+  const activateProject = useCallback((record: ProjectRecord) => {
+    const state = createProjectState(record.manifest)
+    currentProjectRef.current = record
+    projectRef.current = state
+    setCurrentProject(record)
+    setProject(state)
+    selectProjectId(record.id)
+    mutationReplayRef.current = undefined
+    sendSnapshot()
+    sendAdminSnapshot()
+  }, [sendAdminSnapshot, sendSnapshot])
+
+  useEffect(() => {
+    let cancelled = false
+    void listProjects().then(async (stored) => {
+      const available = stored.length > 0 ? stored : [currentProjectRef.current]
+      if (stored.length === 0) await saveProject(available[0]!)
+      if (cancelled) return
+      const selected = available.find(({ id }) => id === selectedProjectId()) ?? available[0]!
+      setProjects(available)
+      activateProject(selected)
+      setProjectsReady(true)
+    }).catch((error) => {
+      if (cancelled) return
+      setStorageError(error instanceof Error ? error.message : String(error))
+      setProjectsReady(true)
+    })
+    return () => { cancelled = true }
+  }, [activateProject])
+
+  const persistActiveProject = useCallback(async (state: ReturnType<typeof createProjectState>, name: string) => {
+    const record: ProjectRecord = {
+      ...currentProjectRef.current,
+      name,
+      manifest: structuredClone(state.activeDocument),
+      updatedAt: Date.now(),
+    }
+    try {
+      await saveProject(record)
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error))
+      throw error
+    }
+    currentProjectRef.current = record
+    setCurrentProject(record)
+    setProjects((current) => [record, ...current.filter(({ id }) => id !== record.id)].sort((left, right) => right.updatedAt - left.updatedAt))
+    setStorageError('')
+  }, [])
+
+  const commitPatch = useCallback(async (baseRevision: number, patch: readonly Operation[], projectName: string) => {
     const result = applyProjectPatch(projectRef.current, baseRevision, patch)
+    if (result.activated) await persistActiveProject(result.state, projectName)
     projectRef.current = result.state
     setProject(result.state)
     if (result.activated && previewReadyRef.current) {
@@ -172,16 +249,51 @@ export default function App() {
       else postToPreview({ type: 'mantle:preview:patch', ...result.activation })
     }
     if (result.activated) sendAdminSnapshot()
-    return { ...projectStateSummary(result.state), activated: result.activated }
-  }, [postToPreview, sendAdminSnapshot, sendSnapshot])
+    return {
+      ...projectStateSummary(result.state),
+      activated: result.activated,
+      project: { id: currentProjectRef.current.id, name: currentProjectRef.current.name },
+    }
+  }, [persistActiveProject, postToPreview, sendAdminSnapshot, sendSnapshot])
 
-  const runMutation = useCallback((key: string, mutate: () => unknown) => {
+  const runMutation = useCallback(async (key: string, mutate: () => Promise<unknown>) => {
     const replay = mutationReplayRef.current
     if (replay?.key === key && replay.revision === projectRef.current.draftRevision) return replay.response
-    const response = mutate()
+    const response = await mutate()
     mutationReplayRef.current = { key, revision: projectRef.current.draftRevision, response }
     return response
   }, [])
+
+  const createNewProject = useCallback(async () => {
+    try {
+      const record = createProjectRecord()
+      await saveProject(record)
+      setProjects((current) => [record, ...current])
+      setStorageError('')
+      activateProject(record)
+      closeMenus()
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error))
+    }
+  }, [activateProject, closeMenus])
+
+  const deleteProject = useCallback(async (record: ProjectRecord) => {
+    try {
+      let remaining = projects.filter(({ id }) => id !== record.id)
+      if (remaining.length === 0) {
+        const replacement = createProjectRecord()
+        await saveProject(replacement)
+        remaining = [replacement]
+      }
+      await removeProject(record.id)
+      setProjects(remaining)
+      setStorageError('')
+      if (record.id === currentProjectRef.current.id) activateProject(remaining[0]!)
+      closeMenus()
+    } catch (error) {
+      setStorageError(error instanceof Error ? error.message : String(error))
+    }
+  }, [activateProject, closeMenus, projects])
 
   const invokePreviewTool = useCallback((name: string, input: Record<string, unknown>, signal?: AbortSignal) => {
     if (!previewReadyRef.current) return Promise.reject(new Error('Preview is not ready.'))
@@ -236,29 +348,40 @@ export default function App() {
   }, [markPreviewReady, sendAdminSnapshot, sendSnapshot])
 
   useEffect(() => {
+    if (!projectsReady) return
     let binding: WebMcpBinding | undefined
     let disposed = false
     void bindWebMcp({
       capabilities: hostCapabilities,
       invoke: async (capability, input, signal) => {
         if (capability.name === 'builder_get_started') {
-          return getStarted(projectRef.current, { ready: previewReadyRef.current, revision: previewRevisionRef.current })
+          return getStarted(
+            projectRef.current,
+            { ready: previewReadyRef.current, revision: previewRevisionRef.current },
+            { id: currentProjectRef.current.id, name: currentProjectRef.current.name },
+          )
         }
         if (capability.name === 'builder_apply_starter') {
           if (typeof input.starter !== 'string' || !starterNames.includes(input.starter as StarterName)) throw new TypeError('Choose a starter returned by builder_get_started.')
           if (!Number.isInteger(input.baseRevision)) throw new TypeError('baseRevision must be an integer.')
-          return runMutation(`${capability.name}:${JSON.stringify(input)}`, () => {
+          const projectName = readProjectName(input.projectName)
+          return runMutation(`${capability.name}:${JSON.stringify(input)}`, async () => {
             const result = applyStarter(projectRef.current, input.starter as StarterName, Number(input.baseRevision), input.replace === true)
+            if (result.activated) await persistActiveProject(result.state, projectName)
             projectRef.current = result.state
             setProject(result.state)
             if (result.activated && previewReadyRef.current) postToPreview({ type: 'mantle:preview:patch', ...result.activation })
             if (result.activated) sendAdminSnapshot()
-            return result.response
+            return {
+              ...result.response,
+              project: { id: currentProjectRef.current.id, name: currentProjectRef.current.name },
+            }
           })
         }
         if (capability.name === 'builder_apply_manifest_patch') {
           if (!Number.isInteger(input.baseRevision)) throw new TypeError('baseRevision must be an integer.')
-          return runMutation(`${capability.name}:${JSON.stringify(input)}`, () => commitPatch(Number(input.baseRevision), readPatch(input.patch)))
+          const projectName = readProjectName(input.projectName)
+          return runMutation(`${capability.name}:${JSON.stringify(input)}`, () => commitPatch(Number(input.baseRevision), readPatch(input.patch), projectName))
         }
         if (capability.name === 'builder_call_preview_tool') {
           if (typeof input.name !== 'string' || !isMessage(input.input)) throw new TypeError('Preview tool name and input are required.')
@@ -275,12 +398,12 @@ export default function App() {
       disposed = true
       binding?.dispose()
     }
-  }, [commitPatch, invokePreviewTool, postToPreview, runMutation, sendAdminSnapshot])
+  }, [commitPatch, invokePreviewTool, persistActiveProject, postToPreview, projectsReady, runMutation, sendAdminSnapshot])
 
   const copyStartingPrompt = async () => {
     const prompt = promptType === 'blank'
-      ? `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first to learn the current Mantle grammar and project state.\n2. Interview me about its actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. Do not call builder_apply_starter. After confirmation, create the complete model from the empty document in one builder_apply_manifest_patch call.\n5. Repair validation errors from the returned diagnostics and test a public capability with builder_call_preview_tool.\n\nStarting context:\n${brief.trim()}`
-      : `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Call builder_apply_starter with starter "${promptType}" and the returned project draftRevision so the host loads its premade Manifest. Do not recreate the starter.\n3. Learn from the returned Manifest, then customize it with builder_apply_manifest_patch.\n4. Repair validation errors with the returned draftRevision and diagnostics.\n5. Test a projected public capability with builder_call_preview_tool.\n\nService brief:\n${brief.trim()}`
+      ? `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first to learn the current Mantle grammar and project state.\n2. Interview me about its actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. Do not call builder_apply_starter. After confirmation, choose a concise projectName and create the complete model from the empty document in one builder_apply_manifest_patch call.\n5. Repair validation errors using that projectName, the returned draftRevision, and diagnostics; then test a public capability with builder_call_preview_tool.\n\nStarting context:\n${brief.trim()}`
+      : `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Choose a concise projectName, then call builder_apply_starter with it, starter "${promptType}", and the returned project draftRevision so the host loads its premade Manifest. Do not recreate the starter.\n3. Learn from the returned Manifest, then customize it with builder_apply_manifest_patch using the same projectName.\n4. Repair validation errors with the returned draftRevision and diagnostics.\n5. Test a projected public capability with builder_call_preview_tool.\n\nService brief:\n${brief.trim()}`
     try {
       await navigator.clipboard.writeText(prompt)
       setPromptCopied(true)
@@ -302,19 +425,30 @@ export default function App() {
 
         <details name="toolbar-menu" data-toolbar-menu className="group relative">
           <summary className="flex h-8 cursor-pointer list-none items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
-            <FileJson2 className="size-4" /> Untitled project <ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
+            <FileJson2 className="size-4" /> <span className="max-w-48 truncate">{currentProject.name}</span> <ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
           </summary>
-          <div className="absolute left-0 top-10 z-60 w-72 rounded-xl border bg-popover p-3 text-popover-foreground shadow-xl">
-            <p className="text-sm font-semibold">Untitled project</p>
-            <p className="mt-1 text-xs text-muted-foreground">Empty Manifest · ready for an agent</p>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-              {Object.entries(summary.atoms).map(([kind, names]) => (
-                <div key={kind} className="flex items-center justify-between rounded-lg bg-muted px-2.5 py-2">
-                  <span className="capitalize text-muted-foreground">{kind}</span>
-                  <span className="font-mono">{names.length}</span>
+          <div className="absolute left-0 top-10 z-60 w-72 rounded-xl border bg-popover p-2 text-popover-foreground shadow-xl">
+            <div className="max-h-64 space-y-1 overflow-y-auto">
+              {projects.map((record) => (
+                <div key={record.id} className={`flex items-center rounded-lg ${record.id === currentProject.id ? 'bg-muted' : ''}`}>
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 px-2.5 py-2 text-left"
+                    onClick={() => { activateProject(record); closeMenus() }}
+                  >
+                    <span className="block truncate text-sm font-medium">{record.name}</span>
+                    <span className="block text-xs text-muted-foreground">{new Date(record.updatedAt).toLocaleString()}</span>
+                  </button>
+                  <Button variant="ghost" size="icon-sm" onClick={() => setDeleteCandidate(record)} aria-label={`Delete ${record.name}`} title={`Delete ${record.name}`}>
+                    <Trash2 />
+                  </Button>
                 </div>
               ))}
             </div>
+            <Button variant="outline" size="sm" className="mt-2 w-full" disabled={!projectsReady} onClick={() => void createNewProject()}>
+              <Plus /> New project
+            </Button>
+            {storageError && <p className="mt-2 px-1 text-xs text-destructive">Autosave unavailable: {storageError}</p>}
           </div>
         </details>
 
@@ -405,6 +539,19 @@ export default function App() {
         </section>
       )}
 
+      <AlertDialog open={deleteCandidate !== null} onOpenChange={(open) => { if (!open) setDeleteCandidate(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete {deleteCandidate?.name}?</AlertDialogTitle>
+            <AlertDialogDescription>This removes the saved Manifest from this browser. This action cannot be undone.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { if (deleteCandidate) void deleteProject(deleteCandidate) }}>Delete project</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <dialog
         ref={buildDialogRef}
         onClose={closeBuild}
@@ -439,4 +586,11 @@ export default function App() {
 
 function isMessage(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function readProjectName(value: unknown): string {
+  if (typeof value !== 'string') throw new TypeError('projectName must be a string.')
+  const name = value.trim()
+  if (name.length === 0 || name.length > 80) throw new TypeError('projectName must be between 1 and 80 characters.')
+  return name
 }

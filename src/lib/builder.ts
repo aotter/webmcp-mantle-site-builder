@@ -437,7 +437,11 @@ const starters = {
 export type StarterName = keyof typeof starters
 export const starterNames = Object.keys(starters) as StarterName[]
 
-export function getStarted(state: ProjectState, preview: { ready: boolean; revision: number }) {
+export function getStarted(
+  state: ProjectState,
+  preview: { ready: boolean; revision: number },
+  project = { id: '', name: 'Untitled project' },
+) {
   return {
     mantleVersion,
     workflow: [
@@ -469,7 +473,7 @@ export function getStarted(state: ProjectState, preview: { ready: boolean; revis
       starterExamples: 'https://github.com/aotter/mantle-starters/tree/develop/overlays',
     },
     starters: starterNames.map((name) => ({ name, description: starters[name].description, bestFor: starters[name].bestFor, source: starters[name].source })),
-    project: { ...projectStateSummary(state), document: state.draftDocument },
+    project: { ...project, ...projectStateSummary(state), document: state.draftDocument },
     preview: {
       ready: preview.ready,
       appliedRevision: preview.revision,
