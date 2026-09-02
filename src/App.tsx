@@ -1,6 +1,6 @@
 import { bindWebMcp, type WebMcpBinding } from '@aotter/mantle-web/webmcp'
 import type { Operation } from 'fast-json-patch'
-import { Bot, Braces, Check, ChevronDown, Copy, ExternalLink, FileJson2, Monitor, Moon, Plus, Smartphone, Sparkles, Sun, Trash2, X } from 'lucide-react'
+import { Bot, Braces, Check, ChevronDown, Copy, FileJson2, Monitor, Moon, Plus, Smartphone, Sparkles, Sun, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -354,13 +354,11 @@ export default function App() {
   const summary = projectStateSummary(project)
   const valid = summary.valid
   const hasProject = Object.values(summary.atoms).some((names) => names.length > 0)
-  const detachedPreview = new URLSearchParams(location.search).get('preview') === 'detached'
-  const detachedPreviewUrl = `?preview=detached&viewport=${previewViewport}`
 
   return (
     <div className="relative h-svh overflow-hidden bg-background text-foreground">
       <canvas className="night-tide" aria-hidden="true" />
-      {!detachedPreview && <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center gap-2 border-b bg-background/55 px-3 shadow-sm backdrop-blur-2xl sm:px-4">
+      <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center gap-2 border-b bg-background/55 px-3 shadow-sm backdrop-blur-2xl sm:px-4">
         <img src="/mantle-mark.svg" alt="" className="mantle-mark size-7 shrink-0" />
         <p className="hidden text-sm font-semibold sm:block">Mantle Builder</p>
 
@@ -402,28 +400,27 @@ export default function App() {
             {darkMode ? <Sun /> : <Moon />}
           </Button>
         </div>
-      </header>}
+      </header>
 
-      {!detachedPreview && <div className="toolbar-menu-backdrop fixed inset-x-0 bottom-0 top-14 z-40" aria-hidden="true" />}
+      <div className="toolbar-menu-backdrop fixed inset-x-0 bottom-0 top-14 z-40" aria-hidden="true" />
 
-      <main className={`fixed inset-x-0 bottom-0 z-10 flex min-w-0 ${detachedPreview ? 'top-0' : 'top-14'}`}>
+      <main className="fixed inset-x-0 bottom-0 top-14 z-10 flex min-w-0">
         <section className={`relative min-w-0 flex-1 ${hasProject ? 'flex flex-col bg-muted/35' : 'bg-transparent'}`}>
-          {hasProject && <>
-            <div className="flex h-11 shrink-0 items-center gap-2 border-b bg-background/75 px-3 backdrop-blur-xl">
-              <span className="text-xs font-semibold">Preview</span>
-              {detachedPreview && <Badge variant="outline" className="gap-1.5 bg-background/45 text-muted-foreground" title="This runtime is simulated in your browser. MCP connection URLs activate after deployment."><span className="size-1.5 rounded-full bg-amber-400" /> Sandbox</Badge>}
-              <div className="ml-auto flex items-center rounded-lg border bg-background/60 p-0.5" role="group" aria-label="Preview viewport">
-                <Button variant={previewViewport === 'desktop' ? 'secondary' : 'ghost'} size="sm" aria-pressed={previewViewport === 'desktop'} onClick={() => setPreviewViewport('desktop')}>
+          {hasProject && <div className="min-h-0 flex-1 overflow-auto bg-muted/35 p-2 sm:p-3">
+            <div className={`mx-auto flex h-full flex-col overflow-hidden rounded-2xl border border-slate-600/70 bg-slate-950 p-1.5 shadow-2xl transition-[width] duration-200 motion-reduce:transition-none ${previewViewport === 'mobile' ? 'w-[min(402px,100%)]' : 'w-full'}`}>
+              <div className="flex h-9 shrink-0 items-center gap-2 px-2 text-slate-200">
+                <span className="text-xs font-semibold">Preview</span>
+                <span className="text-xs text-slate-500">Admin</span>
+                <div className="ml-auto flex items-center rounded-lg bg-black/35 p-0.5" role="group" aria-label="Preview viewport">
+                  <Button variant="ghost" size="sm" className={previewViewport === 'desktop' ? 'bg-white/15 text-white hover:bg-white/20' : 'text-slate-400 hover:bg-white/10 hover:text-white'} aria-pressed={previewViewport === 'desktop'} onClick={() => setPreviewViewport('desktop')}>
                   <Monitor /> <span className="hidden sm:inline">Desktop</span>
-                </Button>
-                <Button variant={previewViewport === 'mobile' ? 'secondary' : 'ghost'} size="sm" aria-pressed={previewViewport === 'mobile'} onClick={() => setPreviewViewport('mobile')}>
+                  </Button>
+                  <Button variant="ghost" size="sm" className={previewViewport === 'mobile' ? 'bg-white/15 text-white hover:bg-white/20' : 'text-slate-400 hover:bg-white/10 hover:text-white'} aria-pressed={previewViewport === 'mobile'} onClick={() => setPreviewViewport('mobile')}>
                   <Smartphone /> <span className="hidden sm:inline">Mobile</span>
-                </Button>
+                  </Button>
+                </div>
               </div>
-              {!detachedPreview && <Button asChild variant="ghost" size="icon-sm"><a href={detachedPreviewUrl} target="_blank" rel="noreferrer" aria-label="Open preview in new tab" title="Open preview in new tab"><ExternalLink /></a></Button>}
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto p-2 sm:p-3">
-              <div className={`relative mx-auto h-full overflow-hidden rounded-xl border bg-background shadow-xl transition-[width] duration-200 motion-reduce:transition-none ${previewViewport === 'mobile' ? 'w-[min(390px,100%)]' : 'w-full'}`}>
+              <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl bg-background">
                 <iframe
                   key={`${currentProject.id}:${project.activeRevision}`}
                   ref={adminIframeRef}
@@ -433,7 +430,7 @@ export default function App() {
                 />
               </div>
             </div>
-          </>}
+          </div>}
           {!hasProject && (
             <div className="absolute inset-0 z-10 grid place-items-center p-5">
               <section className="empty-project-glass w-full max-w-2xl rounded-2xl p-5 sm:p-7">
@@ -485,7 +482,7 @@ export default function App() {
         </section>
       </main>
 
-      {webMcpSupported === false && !detachedPreview && (
+      {webMcpSupported === false && (
         <section className="fixed inset-x-0 bottom-0 top-14 z-50 grid place-items-center bg-background/80 p-6 backdrop-blur-xl" role="alert" aria-live="assertive">
           <div className="empty-project-glass max-w-md rounded-2xl p-7 text-center">
             <Bot className="mx-auto size-7 text-primary" />
