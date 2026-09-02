@@ -158,6 +158,12 @@
   box-shadow: inset 0 1px 0 rgb(110 250 205 / 12%), 0 28px 72px rgb(0 0 0 / 42%), 0 0 40px rgb(110 250 205 / 10%);
 }
 
+.dark .prompt-tab:is([data-active], [data-state="active"]) {
+  outline: 1px solid rgb(110 250 205 / 72%);
+  background: rgb(10 25 42 / 92%);
+  box-shadow: inset 0 0 0 1px rgb(110 250 205 / 18%), 0 0 18px rgb(110 250 205 / 28%);
+}
+
 .night-tide {
   display: none;
 }

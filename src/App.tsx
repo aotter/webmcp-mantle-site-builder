@@ -4,6 +4,8 @@ import { Bot, Braces, Check, ChevronDown, Copy, FileJson2, Moon, PanelRightClose
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Badge } from '@/components/ui/badge'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   applyProjectPatch,
   createProjectState,
@@ -12,10 +14,31 @@ import {
   projectStateSummary,
   readPatch,
 } from '@/lib/project'
+import { applyStarter, getStarted, starterNames, type StarterName } from '@/lib/builder'
 import { publicProcedureCapability, publicViewCapability } from '@/lib/webmcp'
 
+const promptPresets = [
+  { name: 'intake', label: 'Intake', brief: 'Build a public intake flow that collects structured requests and gives staff a review queue.' },
+  { name: 'reservation', label: 'Reservation', brief: 'Build a reservation service with public booking, a member-friendly status view, and a staff queue.' },
+  { name: 'transaction', label: 'Transaction', brief: 'Build a small catalog and ordering service with public discovery, checkout, and staff order management.' },
+  { name: 'procurement', label: 'Procurement', brief: 'Build a procurement workflow where members submit purchase requisitions and staff review them.' },
+  { name: 'blank', label: 'Blank', brief: 'Interview me to learn the actors, data, operations, permissions, and entry points this service needs.' },
+] as const satisfies readonly { name: StarterName | 'blank'; label: string; brief: string }[]
+
+type PromptType = (typeof promptPresets)[number]['name']
+
 const hostCapabilities = [
-  publicViewCapability('builder_inspect_host', 'Inspect the WebMCP Mantle Site Builder revision state.'),
+  publicViewCapability('builder_get_started', 'Call this first. Learn the version-matched Mantle grammar, official docs, starters, current project, and preview tools.'),
+  publicProcedureCapability('builder_apply_starter', 'Apply a version-checked Mantle starter pattern as a valid working example before customizing it.', {
+    type: 'object',
+    properties: {
+      starter: { type: 'string', enum: starterNames },
+      baseRevision: { type: 'integer', minimum: 1 },
+      replace: { type: 'boolean', description: 'Must be true to replace a non-empty project.' },
+    },
+    required: ['starter', 'baseRevision'],
+    additionalProperties: false,
+  }),
   publicProcedureCapability('builder_apply_manifest_patch', 'Apply an RFC 6902 JSON Patch to the current Mantle Manifest draft.', {
     type: 'object',
     properties: {
@@ -57,11 +80,11 @@ interface PendingPreviewCall {
 
 export default function App() {
   const [project, setProject] = useState(() => createProjectState(initialProjectDocument))
-  const [webMcpStatus, setWebMcpStatus] = useState('Registering builder tools…')
   const [previewStatus, setPreviewStatus] = useState('Waiting for preview…')
   const [previewReady, setPreviewReady] = useState(false)
-  const [previewResult, setPreviewResult] = useState('Preview tool has not been called.')
-  const [brief, setBrief] = useState('Build a useful service with public, member, and staff workflows. Keep its data, auth, lifecycle, and business rules in Mantle. Expose governed operations through MCP and browser WebMCP, add human-facing pages only where useful, and deploy it to Cloudflare.')
+  const [webMcpSupported, setWebMcpSupported] = useState<boolean | null>(null)
+  const [promptType, setPromptType] = useState<PromptType>('intake')
+  const [brief, setBrief] = useState<string>(promptPresets[0].brief)
   const [promptCopied, setPromptCopied] = useState(false)
   const [darkMode, setDarkMode] = useState(() => document.documentElement.classList.contains('dark'))
   const [consolePinned, setConsolePinned] = useState(() => new URLSearchParams(location.search).has('console'))
@@ -69,8 +92,10 @@ export default function App() {
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const buildDialogRef = useRef<HTMLDialogElement>(null)
   const previewReadyRef = useRef(false)
+  const previewRevisionRef = useRef(0)
   const resyncsRef = useRef(0)
   const pendingRef = useRef(new Map<string, PendingPreviewCall>())
+  const mutationReplayRef = useRef<{ key: string; revision: number; response: unknown } | undefined>(undefined)
   const adminDevUrl = import.meta.env.VITE_MANTLE_ADMIN_URL
   const closeMenus = useCallback(() => {
     document.querySelectorAll<HTMLDetailsElement>('[data-toolbar-menu][open]').forEach((menu) => { menu.open = false })
@@ -97,13 +122,6 @@ export default function App() {
     document.addEventListener('pointerdown', onPointerDown)
     return () => document.removeEventListener('pointerdown', onPointerDown)
   }, [closeMenus])
-
-  const openBuild = () => {
-    const url = new URL(location.href)
-    url.searchParams.set('tool', 'build')
-    history.pushState(null, '', url)
-    syncUiFromUrl()
-  }
 
   const closeBuild = () => {
     const url = new URL(location.href)
@@ -160,6 +178,14 @@ export default function App() {
     return { ...projectStateSummary(result.state), activated: result.activated }
   }, [postToPreview, sendSnapshot])
 
+  const runMutation = useCallback((key: string, mutate: () => unknown) => {
+    const replay = mutationReplayRef.current
+    if (replay?.key === key && replay.revision === projectRef.current.draftRevision) return replay.response
+    const response = mutate()
+    mutationReplayRef.current = { key, revision: projectRef.current.draftRevision, response }
+    return response
+  }, [])
+
   const invokePreviewTool = useCallback((name: string, input: Record<string, unknown>, signal?: AbortSignal) => {
     if (!previewReadyRef.current) return Promise.reject(new Error('Preview is not ready.'))
     const requestId = crypto.randomUUID()
@@ -194,11 +220,12 @@ export default function App() {
         return
       }
       if (message.type === 'mantle:preview:applied' && Number.isInteger(message.revision)) {
+        previewRevisionRef.current = Number(message.revision)
         setPreviewStatus(`Preview active at revision ${message.revision}. Resyncs: ${resyncsRef.current}.`)
         return
       }
       if (message.type === 'mantle:preview:error' && Array.isArray(message.diagnostics)) {
-        setPreviewStatus(`Preview rejected sync: ${message.diagnostics.join(' ')}`)
+        setPreviewStatus(`Preview rejected sync: ${message.diagnostics.map(diagnosticMessage).join(' ')}`)
         return
       }
       if (message.type !== 'mantle:preview:result' || typeof message.requestId !== 'string') return
@@ -217,38 +244,45 @@ export default function App() {
     void bindWebMcp({
       capabilities: hostCapabilities,
       invoke: async (capability, input, signal) => {
+        if (capability.name === 'builder_get_started') {
+          return getStarted(projectRef.current, { ready: previewReadyRef.current, revision: previewRevisionRef.current })
+        }
+        if (capability.name === 'builder_apply_starter') {
+          if (typeof input.starter !== 'string' || !starterNames.includes(input.starter as StarterName)) throw new TypeError('Choose a starter returned by builder_get_started.')
+          if (!Number.isInteger(input.baseRevision)) throw new TypeError('baseRevision must be an integer.')
+          return runMutation(`${capability.name}:${JSON.stringify(input)}`, () => {
+            const result = applyStarter(projectRef.current, input.starter as StarterName, Number(input.baseRevision), input.replace === true)
+            projectRef.current = result.state
+            setProject(result.state)
+            if (result.activated && previewReadyRef.current) postToPreview({ type: 'mantle:preview:patch', ...result.activation })
+            return result.response
+          })
+        }
         if (capability.name === 'builder_apply_manifest_patch') {
           if (!Number.isInteger(input.baseRevision)) throw new TypeError('baseRevision must be an integer.')
-          return commitPatch(Number(input.baseRevision), readPatch(input.patch))
+          return runMutation(`${capability.name}:${JSON.stringify(input)}`, () => commitPatch(Number(input.baseRevision), readPatch(input.patch)))
         }
         if (capability.name === 'builder_call_preview_tool') {
           if (typeof input.name !== 'string' || !isMessage(input.input)) throw new TypeError('Preview tool name and input are required.')
           return invokePreviewTool(input.name, input.input, signal)
         }
-        return projectStateSummary(projectRef.current)
+        throw new Error(`Unknown builder tool '${capability.name}'.`)
       },
     }).then((result) => {
       if (disposed) return result.dispose()
       binding = result
-      setWebMcpStatus(result.supported ? '3 builder WebMCP tools ready' : 'Native WebMCP unavailable')
-    }).catch((error: unknown) => setWebMcpStatus(String(error)))
+      setWebMcpSupported(result.supported)
+    }).catch(() => setWebMcpSupported(false))
     return () => {
       disposed = true
       binding?.dispose()
     }
-  }, [commitPatch, invokePreviewTool])
-
-  const callPreview = async () => {
-    try {
-      const result = await invokePreviewTool('preview_inspect_site', {})
-      setPreviewResult(JSON.stringify(result))
-    } catch (error) {
-      setPreviewResult(error instanceof Error ? error.message : 'Preview tool failed.')
-    }
-  }
+  }, [commitPatch, invokePreviewTool, postToPreview, runMutation])
 
   const copyStartingPrompt = async () => {
-    const prompt = `Use this Mantle Site Builder's WebMCP tools to turn the service brief below into a working, host-owned Mantle application. First call builder_inspect_host, then apply small RFC 6902 patches with builder_apply_manifest_patch. Describe the domain once as Schema, View, Procedure, and Trigger atoms in Mantle Manifest YAML. Use supported built-in handlers for business logic. Expose useful governed capabilities through HTTP/OpenAPI, MCP, and browser WebMCP; add Web or Admin surfaces only where people need them. Preserve the last-known-good revision, inspect each activated preview, and keep the result deployable to Cloudflare Workers with static assets and site-owned data and auth.\n\nService brief:\n${brief.trim()}`
+    const prompt = promptType === 'blank'
+      ? `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first to learn the current Mantle grammar and project state.\n2. Before changing the project, interview me about its actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. After confirmation, use the closest starter if helpful, then customize with builder_apply_manifest_patch.\n5. Repair validation errors from the returned diagnostics and test a public capability with builder_call_preview_tool.\n\nStarting context:\n${brief.trim()}`
+      : `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Call builder_apply_starter with starter "${promptType}" and the returned project draftRevision so the host loads its premade Manifest. Do not recreate the starter.\n3. Learn from the returned Manifest, then customize it with builder_apply_manifest_patch.\n4. Repair validation errors with the returned draftRevision and diagnostics.\n5. Test a projected public capability with builder_call_preview_tool.\n\nService brief:\n${brief.trim()}`
     try {
       await navigator.clipboard.writeText(prompt)
       setPromptCopied(true)
@@ -287,28 +321,9 @@ export default function App() {
         </details>
 
         <div className="ml-auto flex items-center gap-1">
-          <Button variant="ghost" size="sm" onClick={openBuild} aria-label="Open build manifest">
-            <Braces /> <span className="hidden sm:inline">Build</span>
-            <span className={`size-2 rounded-full ${valid ? 'bg-emerald-500' : 'bg-destructive'}`} />
+          <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label={darkMode ? 'Use light theme' : 'Use dark theme'} title={darkMode ? 'Use light theme' : 'Use dark theme'}>
+            {darkMode ? <Sun /> : <Moon />}
           </Button>
-
-          <details name="toolbar-menu" data-toolbar-menu className="group relative">
-            <summary className="flex h-7 cursor-pointer list-none items-center gap-1 rounded-lg px-2.5 text-[0.8rem] font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
-              <Bot className="size-3.5" /> <span className="hidden sm:inline">Agent</span> <ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
-            </summary>
-            <div className="absolute right-0 top-9 z-60 w-[min(22rem,calc(100vw-1.5rem))] rounded-xl border bg-popover p-3 text-popover-foreground shadow-xl">
-              <div className="flex items-center gap-2 text-sm font-semibold"><span className="size-2 rounded-full bg-emerald-500" /> Agent interface</div>
-              <p className="mt-1 text-xs leading-5 text-muted-foreground">{webMcpStatus}</p>
-              <div className="mt-3 space-y-1 rounded-lg bg-muted p-2 font-mono text-[0.7rem] text-muted-foreground">
-                <p>builder_inspect_host</p>
-                <p>builder_apply_manifest_patch</p>
-                <p>builder_call_preview_tool</p>
-              </div>
-              <Button className="mt-3 w-full" variant="outline" size="sm" disabled={!previewReady} onClick={callPreview}>Call preview WebMCP</Button>
-              <p className="mt-2 truncate text-xs text-muted-foreground" title={previewResult}>{previewResult}</p>
-            </div>
-          </details>
-
           <Button
             variant={consolePinned ? 'secondary' : 'ghost'}
             size="icon-sm"
@@ -318,9 +333,6 @@ export default function App() {
             title={consolePinned ? 'Unpin developer console' : 'Pin developer console'}
           >
             {consolePinned ? <PanelRightClose /> : <PanelRightOpen />}
-          </Button>
-          <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label={darkMode ? 'Use light theme' : 'Use dark theme'} title={darkMode ? 'Use light theme' : 'Use dark theme'}>
-            {darkMode ? <Sun /> : <Moon />}
           </Button>
         </div>
       </header>
@@ -341,15 +353,44 @@ export default function App() {
             <div className="absolute inset-0 z-10 grid place-items-center p-5">
               <section className="empty-project-glass w-full max-w-2xl rounded-2xl p-5 sm:p-7">
                 <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Sparkles className="size-4" /> Agent-built · Agent-operated</div>
-                <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">Build a real service around your business logic.</h1>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">Tell your agent how your business works. It uses <a href="https://github.com/aotter/mantle" target="_blank" rel="noreferrer" className="font-medium text-foreground underline-offset-4 hover:underline">Mantle</a> to turn that logic into APIs, MCP, and WebMCP tools—ready to deploy on Cloudflare.</p>
-                <textarea
-                  value={brief}
-                  onChange={(event) => { setBrief(event.target.value); setPromptCopied(false) }}
-                  aria-label="Service brief"
-                  rows={5}
-                  className="mt-5 w-full resize-y rounded-xl border bg-background/65 p-3 text-sm leading-6 shadow-inner outline-none backdrop-blur-md transition focus:border-ring focus:ring-3 focus:ring-ring/30"
-                />
+                <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">Describe the workflow. Ship the service.</h1>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground"><a href="https://github.com/aotter/mantle" target="_blank" rel="noreferrer" className="font-medium text-foreground underline-offset-4 hover:underline">Mantle</a> turns your business rules into agent-ready services.</p>
+                <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Service outputs">
+                  <Badge variant="secondary">Cloudflare-ready</Badge>
+                  <Badge variant="secondary">API</Badge>
+                  <Badge variant="secondary">MCP</Badge>
+                  <Badge variant="secondary">WebMCP</Badge>
+                </div>
+                <Tabs
+                  value={promptType}
+                  onValueChange={(value) => {
+                    const preset = promptPresets.find(({ name }) => name === value)
+                    if (!preset) return
+                    setPromptType(preset.name)
+                    setBrief(preset.brief)
+                    setPromptCopied(false)
+                  }}
+                  className="mt-5 gap-0 rounded-xl border bg-background/65 shadow-inner backdrop-blur-md"
+                >
+                  <TabsList className="h-auto w-full overflow-x-auto rounded-none bg-transparent p-1" aria-label="Starting prompt type">
+                    {promptPresets.map((preset) => (
+                      <TabsTrigger key={preset.name} value={preset.name} className="prompt-tab min-w-fit px-2.5 py-2 text-xs">
+                        {preset.label}
+                      </TabsTrigger>
+                    ))}
+                  </TabsList>
+                  {promptPresets.map((preset) => (
+                    <TabsContent key={preset.name} value={preset.name} className="m-0">
+                      <textarea
+                        value={promptType === preset.name ? brief : preset.brief}
+                        onChange={(event) => { setBrief(event.target.value); setPromptCopied(false) }}
+                        aria-label={`${preset.label} service brief`}
+                        rows={4}
+                        className="block w-full resize-y border-0 bg-transparent p-3 text-sm leading-6 outline-none"
+                      />
+                    </TabsContent>
+                  ))}
+                </Tabs>
                 <div className="mt-3 flex flex-wrap items-center gap-3">
                   <Button onClick={copyStartingPrompt} disabled={!brief.trim()}>{promptCopied ? <Check /> : <Copy />}{promptCopied ? 'Copied for agent' : 'Copy agent prompt'}</Button>
                 </div>
@@ -385,6 +426,16 @@ export default function App() {
         )}
       </main>
 
+      {webMcpSupported === false && (
+        <section className="fixed inset-x-0 bottom-0 top-14 z-50 grid place-items-center bg-background/80 p-6 backdrop-blur-xl" role="alert" aria-live="assertive">
+          <div className="empty-project-glass max-w-md rounded-2xl p-7 text-center">
+            <Bot className="mx-auto size-7 text-primary" />
+            <h1 className="mt-4 text-xl font-semibold">WebMCP is required</h1>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">Open this builder in a WebMCP-enabled browser or agent to build and preview a Mantle service.</p>
+          </div>
+        </section>
+      )}
+
       <dialog
         ref={buildDialogRef}
         onClose={closeBuild}
@@ -404,7 +455,7 @@ export default function App() {
         </header>
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
           <div className={`rounded-xl border p-3 text-sm ${valid ? 'bg-card' : 'border-destructive/30 bg-destructive/5'}`} aria-live="polite">
-            {valid ? 'Mantle parser, linker, and RuntimePlan compiler passed.' : project.diagnostics.join(' ')}
+            {valid ? 'Mantle parser, linker, and RuntimePlan compiler passed.' : project.diagnostics.map(({ message }) => message).join(' ')}
           </div>
           {hasProject ? (
             <pre className="overflow-auto rounded-xl border bg-neutral-950 p-4 text-xs leading-5 text-neutral-200 shadow-inner">
@@ -419,4 +470,8 @@ export default function App() {
 
 function isMessage(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function diagnosticMessage(value: unknown) {
+  return isMessage(value) && typeof value.message === 'string' ? value.message : String(value)
 }

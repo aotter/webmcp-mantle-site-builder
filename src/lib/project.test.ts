@@ -8,6 +8,7 @@ import {
   initialProjectDocument,
   type ProjectDocument,
 } from './project'
+import { applyStarter, getStarted, publicTools, starterNames } from './builder'
 
 const fixtureDocument: ProjectDocument = {
   schemas: {
@@ -45,6 +46,7 @@ describe('Manifest revision boundary', () => {
     ])
     expect(invalid.activated).toBe(false)
     expect(invalid.state.activeRevision).toBe(2)
+    expect(invalid.state.diagnostics[0]?.path).toBe('/views/items/spec/from')
 
     const snapshot = applyPreviewSync(emptyPreviewState(), {
       type: 'mantle:preview:snapshot',
@@ -63,5 +65,30 @@ describe('Manifest revision boundary', () => {
     expect(mismatch.kind).toBe('resync')
     if (mismatch.kind !== 'resync') throw new Error('Expected a resync request.')
     expect(mismatch.state.revision).toBe(2)
+  })
+
+  it('does not mutate a draft when a JSON Patch fails halfway through', () => {
+    const initial = createProjectState(fixtureDocument)
+    expect(() => applyProjectPatch(initial, 1, [
+      { op: 'replace', path: '/views/items/spec/title', value: 'Changed' },
+      { op: 'replace', path: '/views/items/spec/missing', value: 'Invalid' },
+    ])).toThrow()
+    expect(initial.draftDocument.views.items?.spec.title).toBe('Items')
+  })
+
+  it('starts from an official example and returns agent-readable grammar', () => {
+    const initial = createProjectState(initialProjectDocument)
+    const guide = getStarted(initial, { ready: true, revision: 1 })
+    expect(guide.grammar.builtins.operations).toContain('create')
+    expect(guide.starters.map(({ name }) => name)).toEqual(['intake', 'reservation', 'transaction', 'procurement'])
+
+    for (const starter of starterNames) expect(applyStarter(initial, starter, 1).response.valid).toBe(true)
+
+    const started = applyStarter(initial, 'transaction', 1)
+    expect(started.response.valid).toBe(true)
+    expect(started.response.document.triggers['place-order-mcp']?.spec.source.kind).toBe('mcp')
+    expect(publicTools(started.state).some(({ ownerName }) => ownerName === 'place-order')).toBe(true)
+    expect(applyStarter(initial, 'procurement', 1).response.document.triggers['review-requisition-mcp']?.spec.source).toMatchObject({ kind: 'mcp', surface: 'staff' })
+    expect(() => applyStarter(started.state, 'intake', 2)).toThrow('replace: true')
   })
 })

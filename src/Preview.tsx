@@ -1,37 +1,70 @@
 import { bindWebMcp, type WebMcpBinding } from '@aotter/mantle-web/webmcp'
-import { useEffect, useRef, useState } from 'react'
+import { projectCallableCapabilities } from '@aotter/mantle-runtime'
+import { firstZodIssueAsJsonPointer, jsonSchemaToZod } from '@aotter/mantle-spec'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { applyPreviewSync, emptyPreviewState, type PreviewState } from '@/lib/project'
 import { publicViewCapability } from '@/lib/webmcp'
 
-const previewCapabilities = [
-  publicViewCapability('preview_inspect_site', 'Inspect the active Mantle generated-site preview.'),
-]
+const inspectCapability = publicViewCapability('preview_inspect_site', 'Inspect the active Mantle generated-site preview and its callable public tools.')
 
 export default function Preview() {
   const [preview, setPreview] = useState<PreviewState>(() => emptyPreviewState())
   const [webMcpStatus, setWebMcpStatus] = useState('Registering preview tool…')
   const [calls, setCalls] = useState(0)
+  const [lastInvocation, setLastInvocation] = useState<{ name: string; input: Record<string, unknown> } | null>(null)
   const previewRef = useRef(preview)
   const callsRef = useRef(0)
+
+  const invokeCapability = useCallback((name: string, input: Record<string, unknown>) => {
+    const state = previewRef.current
+    const nextCalls = ++callsRef.current
+    setCalls(nextCalls)
+    const tools = state.plan ? projectCallableCapabilities(state.plan, { surface: 'public' }) : []
+    if (name === inspectCapability.name) {
+      return {
+        document: 'preview',
+        capability: name,
+        revision: state.revision,
+        viewTitle: viewTitle(state),
+        tools: tools.map(({ name: toolName, kind, ownerName, description, inputSchema }) => ({ name: toolName, kind, ownerName, description, inputSchema })),
+        calls: nextCalls,
+        ok: true,
+      }
+    }
+    const tool = tools.find(({ name: toolName }) => toolName === name)
+    if (!tool) throw new Error(`Unknown preview tool '${name}'.`)
+    const validation = jsonSchemaToZod(tool.inputSchema).safeParse(input)
+    if (!validation.success) {
+      const issue = firstZodIssueAsJsonPointer(validation.error)
+      throw new TypeError(`Invalid '${name}' input at ${issue.instancePath || '/'}: ${issue.message}`)
+    }
+    const validatedInput = validation.data as Record<string, unknown>
+    setLastInvocation({ name, input: validatedInput })
+    return {
+      document: 'preview',
+      capability: tool.name,
+      kind: tool.kind,
+      ownerName: tool.ownerName,
+      revision: state.revision,
+      input: validatedInput,
+      inputValidated: true,
+      simulated: true,
+      calls: nextCalls,
+      ok: true,
+    }
+  }, [])
 
   useEffect(() => {
     let binding: WebMcpBinding | undefined
     let disposed = false
+    const capabilities = [
+      inspectCapability,
+      ...(preview.plan ? projectCallableCapabilities(preview.plan, { surface: 'public' }).filter(({ name }) => name !== inspectCapability.name) : []),
+    ]
     void bindWebMcp({
-      capabilities: previewCapabilities,
-      invoke: async (capability) => {
-        const nextCalls = ++callsRef.current
-        setCalls(nextCalls)
-        return {
-          document: 'preview',
-          capability: capability.name,
-          revision: previewRef.current.revision,
-          viewTitle: viewTitle(previewRef.current),
-          calls: nextCalls,
-          ok: true,
-        }
-      },
+      capabilities,
+      invoke: async (capability, input) => invokeCapability(capability.name, input),
     }).then((result) => {
       if (disposed) return result.dispose()
       binding = result
@@ -41,26 +74,18 @@ export default function Preview() {
       disposed = true
       binding?.dispose()
     }
-  }, [])
+  }, [invokeCapability, preview.plan])
 
   useEffect(() => {
     const send = (message: Record<string, unknown>) => parent.postMessage({ protocolVersion: 1, ...message }, location.origin)
     const invoke = async (request: Record<string, unknown>) => {
       try {
-        if (request.name !== 'preview_inspect_site') throw new Error(`Unknown preview tool '${String(request.name)}'.`)
-        const nextCalls = ++callsRef.current
-        setCalls(nextCalls)
+        if (typeof request.name !== 'string' || !isMessage(request.input)) throw new Error('Preview tool name and input are required.')
         send({
           type: 'mantle:preview:result',
           requestId: request.requestId,
           ok: true,
-          result: {
-            document: 'preview',
-            capability: request.name,
-            revision: previewRef.current.revision,
-            viewTitle: viewTitle(previewRef.current),
-            calls: nextCalls,
-          },
+          result: invokeCapability(request.name, request.input),
         })
       } catch (error) {
         send({
@@ -98,7 +123,7 @@ export default function Preview() {
     window.addEventListener('message', onMessage)
     send({ type: 'mantle:preview:ready' })
     return () => window.removeEventListener('message', onMessage)
-  }, [])
+  }, [invokeCapability])
 
   const title = viewTitle(preview)
   if (!preview.plan || Object.keys(preview.plan.views).length === 0) return <div className="min-h-svh bg-white" />
@@ -114,6 +139,12 @@ export default function Preview() {
           <span className="ml-auto rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">Active revision {preview.revision}</span>
         </div>
         <div className="mt-6 rounded-xl border border-dashed bg-neutral-50 p-8 text-center text-sm text-neutral-500">This generated view has no records yet.</div>
+        {lastInvocation && (
+          <div className="mt-4 rounded-xl border bg-emerald-50 p-4 text-sm text-emerald-950">
+            <p className="font-medium">WebMCP preview · {lastInvocation.name}</p>
+            <pre className="mt-2 overflow-auto text-xs"><code>{JSON.stringify(lastInvocation.input, null, 2)}</code></pre>
+          </div>
+        )}
         <footer className="mt-8 flex flex-wrap gap-3 border-t pt-4 text-xs text-neutral-500">
           <span>{preview.plan ? 'Mantle RuntimePlan compiled' : 'Waiting for Manifest snapshot'}</span>
           <span>·</span>

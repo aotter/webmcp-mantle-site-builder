@@ -7,6 +7,7 @@ import {
   type SchemaManifest,
   type TriggerManifest,
   type ViewManifest,
+  type Diagnostic,
 } from '@aotter/mantle-spec'
 import jsonPatch, { type Operation } from 'fast-json-patch'
 import { stringify } from 'yaml'
@@ -24,8 +25,10 @@ export interface ProjectState {
   activeDocument: ProjectDocument
   activeRevision: number
   activePlan: RuntimePlan
-  diagnostics: string[]
+  diagnostics: BuilderDiagnostic[]
 }
+
+export type BuilderDiagnostic = Pick<Diagnostic, 'code' | 'phase' | 'severity' | 'path' | 'message' | 'suggestion'>
 
 export const initialProjectDocument: ProjectDocument = {
   schemas: {},
@@ -43,23 +46,24 @@ const groups = {
 
 export function compileProjectDocument(document: ProjectDocument) {
   let source: string
+  const pointers = projectDocumentPointers(document)
   try {
     source = projectDocumentYaml(document)
   } catch (error) {
-    return { ok: false as const, diagnostics: [messageOf(error)] }
+    return { ok: false as const, diagnostics: [invalidDocumentDiagnostic(error)] }
   }
 
   const parsed = parseManifestSources({ sources: [{ sourceId: 'site.yaml', text: source }] })
-  if (!parsed.ok) return { ok: false as const, diagnostics: parsed.diagnostics.map(({ message }) => message) }
+  if (!parsed.ok) return { ok: false as const, diagnostics: parsed.diagnostics.map((diagnostic) => builderDiagnostic(diagnostic, pointers)) }
 
   const linked = linkManifestSet(parsed.value)
-  if (!linked.ok) return { ok: false as const, diagnostics: linked.diagnostics.map(({ message }) => message) }
+  if (!linked.ok) return { ok: false as const, diagnostics: linked.diagnostics.map((diagnostic) => builderDiagnostic(diagnostic, pointers)) }
 
   const compiled = compileRuntimePlan(linked.value)
-  if (!compiled.ok) return { ok: false as const, diagnostics: compiled.diagnostics.map(({ message }) => message) }
+  if (!compiled.ok) return { ok: false as const, diagnostics: compiled.diagnostics.map((diagnostic) => builderDiagnostic(diagnostic, pointers)) }
   return {
     ok: true as const,
-    diagnostics: [...parsed.diagnostics, ...linked.diagnostics, ...compiled.diagnostics].map(({ message }) => message),
+    diagnostics: [...parsed.diagnostics, ...linked.diagnostics, ...compiled.diagnostics].map((diagnostic) => builderDiagnostic(diagnostic, pointers)),
     plan: compiled.value,
     source,
   }
@@ -82,7 +86,7 @@ export function projectDocumentYaml(document: ProjectDocument) {
 
 export function createProjectState(document: ProjectDocument): ProjectState {
   const compilation = compileProjectDocument(document)
-  if (!compilation.ok) throw new Error(`Initial project is invalid: ${compilation.diagnostics.join('; ')}`)
+  if (!compilation.ok) throw new Error(`Initial project is invalid: ${compilation.diagnostics.map(({ message }) => message).join('; ')}`)
   return {
     draftDocument: structuredClone(document),
     draftRevision: 1,
@@ -212,4 +216,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function messageOf(error: unknown) {
   return error instanceof Error ? error.message : 'Invalid project document.'
+}
+
+function builderDiagnostic({ code, phase, severity, path, source, message, suggestion }: Diagnostic, pointers: string[]): BuilderDiagnostic {
+  const prefix = source ? pointers[source.documentIndex] : undefined
+  return { code, phase, severity, path: prefix ? `${prefix}${path}` : path, message, ...(suggestion ? { suggestion } : {}) }
+}
+
+function invalidDocumentDiagnostic(error: unknown): BuilderDiagnostic {
+  return {
+    code: 'INVALID_MANIFEST_ENVELOPE',
+    phase: 'validate',
+    severity: 'error',
+    path: '/',
+    message: messageOf(error),
+  }
+}
+
+function projectDocumentPointers(document: ProjectDocument) {
+  return (Object.keys(groups) as (keyof ProjectDocument)[]).flatMap((group) => Object.keys(document[group])
+    .sort((left, right) => left.localeCompare(right))
+    .map((name) => `/${group}/${name.replaceAll('~', '~0').replaceAll('/', '~1')}`))
 }
