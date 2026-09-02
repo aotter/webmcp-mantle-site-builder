@@ -1,6 +1,6 @@
 import { bindWebMcp, type WebMcpBinding } from '@aotter/mantle-web/webmcp'
 import type { Operation } from 'fast-json-patch'
-import { Bot, Braces, Check, ChevronDown, Copy, FileJson2, Moon, Plus, Sparkles, Sun, Trash2, X } from 'lucide-react'
+import { Bot, Braces, Check, ChevronDown, Copy, ExternalLink, FileJson2, Monitor, Moon, Plus, Smartphone, Sparkles, Sun, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -46,6 +46,7 @@ const promptPresets = [
 ] as const satisfies readonly { name: StarterName | 'blank'; label: string; brief: string }[]
 
 type PromptType = (typeof promptPresets)[number]['name']
+type PreviewViewport = 'desktop' | 'mobile'
 
 const hostCapabilities = [
   publicViewCapability('builder_get_started', 'Call this first. Learn the version-matched Mantle grammar, official docs, starters, current project, and preview tools.'),
@@ -107,6 +108,7 @@ export default function App() {
   const [brief, setBrief] = useState<string>(promptPresets[0].brief)
   const [promptCopied, setPromptCopied] = useState(false)
   const [darkMode, setDarkMode] = useState(() => document.documentElement.classList.contains('dark'))
+  const [previewViewport, setPreviewViewport] = useState<PreviewViewport>(() => new URLSearchParams(location.search).get('viewport') === 'mobile' ? 'mobile' : 'desktop')
   const currentProjectRef = useRef(currentProject)
   const projectRef = useRef(project)
   const adminIframeRef = useRef<HTMLIFrameElement>(null)
@@ -352,11 +354,13 @@ export default function App() {
   const summary = projectStateSummary(project)
   const valid = summary.valid
   const hasProject = Object.values(summary.atoms).some((names) => names.length > 0)
+  const detachedPreview = new URLSearchParams(location.search).get('preview') === 'detached'
+  const detachedPreviewUrl = `?preview=detached&viewport=${previewViewport}`
 
   return (
     <div className="relative h-svh overflow-hidden bg-background text-foreground">
       <canvas className="night-tide" aria-hidden="true" />
-      <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center gap-2 border-b bg-background/55 px-3 shadow-sm backdrop-blur-2xl sm:px-4">
+      {!detachedPreview && <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center gap-2 border-b bg-background/55 px-3 shadow-sm backdrop-blur-2xl sm:px-4">
         <img src="/mantle-mark.svg" alt="" className="mantle-mark size-7 shrink-0" />
         <p className="hidden text-sm font-semibold sm:block">Mantle Builder</p>
 
@@ -390,23 +394,46 @@ export default function App() {
         </details>
 
         <div className="ml-auto flex items-center gap-1">
+          <Badge variant="outline" className="gap-1.5 bg-background/45 text-muted-foreground" title="This runtime is simulated in your browser. MCP connection URLs activate after deployment.">
+            <span className="size-1.5 rounded-full bg-amber-400" />
+            Sandbox <span className="hidden md:inline">· MCP connects after deploy</span>
+          </Badge>
           <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label={darkMode ? 'Use light theme' : 'Use dark theme'} title={darkMode ? 'Use light theme' : 'Use dark theme'}>
             {darkMode ? <Sun /> : <Moon />}
           </Button>
         </div>
-      </header>
+      </header>}
 
-      <div className="toolbar-menu-backdrop fixed inset-x-0 bottom-0 top-14 z-40" aria-hidden="true" />
+      {!detachedPreview && <div className="toolbar-menu-backdrop fixed inset-x-0 bottom-0 top-14 z-40" aria-hidden="true" />}
 
-      <main className="fixed inset-x-0 bottom-0 top-14 z-10 flex min-w-0">
-        <section className={`relative min-w-0 flex-1 ${hasProject ? 'bg-background' : 'bg-transparent'}`}>
-          <iframe
-            key={`${currentProject.id}:${project.activeRevision}`}
-            ref={adminIframeRef}
-            src="/_mantle/admin/index.html"
-            title="Mantle Admin"
-            className={`absolute inset-0 h-full w-full border-0 bg-background transition-opacity ${hasProject ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
-          />
+      <main className={`fixed inset-x-0 bottom-0 z-10 flex min-w-0 ${detachedPreview ? 'top-0' : 'top-14'}`}>
+        <section className={`relative min-w-0 flex-1 ${hasProject ? 'flex flex-col bg-muted/35' : 'bg-transparent'}`}>
+          {hasProject && <>
+            <div className="flex h-11 shrink-0 items-center gap-2 border-b bg-background/75 px-3 backdrop-blur-xl">
+              <span className="text-xs font-semibold">Preview</span>
+              {detachedPreview && <Badge variant="outline" className="gap-1.5 bg-background/45 text-muted-foreground" title="This runtime is simulated in your browser. MCP connection URLs activate after deployment."><span className="size-1.5 rounded-full bg-amber-400" /> Sandbox</Badge>}
+              <div className="ml-auto flex items-center rounded-lg border bg-background/60 p-0.5" role="group" aria-label="Preview viewport">
+                <Button variant={previewViewport === 'desktop' ? 'secondary' : 'ghost'} size="sm" aria-pressed={previewViewport === 'desktop'} onClick={() => setPreviewViewport('desktop')}>
+                  <Monitor /> <span className="hidden sm:inline">Desktop</span>
+                </Button>
+                <Button variant={previewViewport === 'mobile' ? 'secondary' : 'ghost'} size="sm" aria-pressed={previewViewport === 'mobile'} onClick={() => setPreviewViewport('mobile')}>
+                  <Smartphone /> <span className="hidden sm:inline">Mobile</span>
+                </Button>
+              </div>
+              {!detachedPreview && <Button asChild variant="ghost" size="icon-sm"><a href={detachedPreviewUrl} target="_blank" rel="noreferrer" aria-label="Open preview in new tab" title="Open preview in new tab"><ExternalLink /></a></Button>}
+            </div>
+            <div className="min-h-0 flex-1 overflow-auto p-2 sm:p-3">
+              <div className={`relative mx-auto h-full overflow-hidden rounded-xl border bg-background shadow-xl transition-[width] duration-200 motion-reduce:transition-none ${previewViewport === 'mobile' ? 'w-[min(390px,100%)]' : 'w-full'}`}>
+                <iframe
+                  key={`${currentProject.id}:${project.activeRevision}`}
+                  ref={adminIframeRef}
+                  src="/_mantle/admin/index.html"
+                  title="Mantle Admin preview"
+                  className="absolute inset-0 h-full w-full border-0 bg-background"
+                />
+              </div>
+            </div>
+          </>}
           {!hasProject && (
             <div className="absolute inset-0 z-10 grid place-items-center p-5">
               <section className="empty-project-glass w-full max-w-2xl rounded-2xl p-5 sm:p-7">
@@ -458,7 +485,7 @@ export default function App() {
         </section>
       </main>
 
-      {webMcpSupported === false && (
+      {webMcpSupported === false && !detachedPreview && (
         <section className="fixed inset-x-0 bottom-0 top-14 z-50 grid place-items-center bg-background/80 p-6 backdrop-blur-xl" role="alert" aria-live="assertive">
           <div className="empty-project-glass max-w-md rounded-2xl p-7 text-center">
             <Bot className="mx-auto size-7 text-primary" />
