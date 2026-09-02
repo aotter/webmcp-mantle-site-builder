@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { projectDeveloperConsole } from '@aotter/mantle-admin'
 
 import {
   applyPreviewSync,
@@ -88,6 +89,7 @@ describe('Manifest revision boundary', () => {
     expect(started.response.valid).toBe(true)
     expect(started.response.document.triggers['place-order-mcp']?.spec.source.kind).toBe('mcp')
     expect(publicTools(started.state).some(({ ownerName }) => ownerName === 'place-order')).toBe(true)
+    expect(projectDeveloperConsole(started.state.activePlan).graph.atoms).toContainEqual(expect.objectContaining({ id: 'Trigger:place-order-mcp' }))
     expect(applyStarter(initial, 'procurement', 1).response.document.triggers['review-requisition-mcp']?.spec.source).toMatchObject({ kind: 'mcp', surface: 'staff' })
     expect(() => applyStarter(started.state, 'intake', 2)).toThrow('replace: true')
   })

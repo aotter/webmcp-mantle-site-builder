@@ -1,6 +1,7 @@
 import { bindWebMcp, type WebMcpBinding } from '@aotter/mantle-web/webmcp'
+import { projectDeveloperConsole } from '@aotter/mantle-admin'
 import type { Operation } from 'fast-json-patch'
-import { Bot, Braces, Check, ChevronDown, Copy, FileJson2, Moon, PanelRightClose, PanelRightOpen, Sparkles, Sun, X } from 'lucide-react'
+import { Bot, Braces, Check, ChevronDown, Copy, FileJson2, Moon, Sparkles, Sun, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -80,30 +81,26 @@ interface PendingPreviewCall {
 
 export default function App() {
   const [project, setProject] = useState(() => createProjectState(initialProjectDocument))
-  const [previewStatus, setPreviewStatus] = useState('Waiting for preview…')
-  const [previewReady, setPreviewReady] = useState(false)
   const [webMcpSupported, setWebMcpSupported] = useState<boolean | null>(null)
   const [promptType, setPromptType] = useState<PromptType>('intake')
   const [brief, setBrief] = useState<string>(promptPresets[0].brief)
   const [promptCopied, setPromptCopied] = useState(false)
   const [darkMode, setDarkMode] = useState(() => document.documentElement.classList.contains('dark'))
-  const [consolePinned, setConsolePinned] = useState(() => new URLSearchParams(location.search).has('console'))
   const projectRef = useRef(project)
-  const iframeRef = useRef<HTMLIFrameElement>(null)
+  const previewIframeRef = useRef<HTMLIFrameElement>(null)
+  const adminIframeRef = useRef<HTMLIFrameElement>(null)
   const buildDialogRef = useRef<HTMLDialogElement>(null)
   const previewReadyRef = useRef(false)
   const previewRevisionRef = useRef(0)
   const resyncsRef = useRef(0)
   const pendingRef = useRef(new Map<string, PendingPreviewCall>())
   const mutationReplayRef = useRef<{ key: string; revision: number; response: unknown } | undefined>(undefined)
-  const adminDevUrl = import.meta.env.VITE_MANTLE_ADMIN_URL
   const closeMenus = useCallback(() => {
     document.querySelectorAll<HTMLDetailsElement>('[data-toolbar-menu][open]').forEach((menu) => { menu.open = false })
   }, [])
 
   const syncUiFromUrl = useCallback(() => {
     const search = new URLSearchParams(location.search)
-    setConsolePinned(search.has('console'))
     const dialog = buildDialogRef.current
     if (search.get('tool') === 'build' && !dialog?.open) dialog?.showModal()
     if (search.get('tool') !== 'build' && dialog?.open) dialog.close()
@@ -130,14 +127,6 @@ export default function App() {
     buildDialogRef.current?.close()
   }
 
-  const toggleConsole = () => {
-    const url = new URL(location.href)
-    if (consolePinned) url.searchParams.delete('console')
-    else url.searchParams.set('console', 'right')
-    history.pushState(null, '', url)
-    syncUiFromUrl()
-  }
-
   const toggleTheme = () => {
     const next = !darkMode
     document.documentElement.classList.toggle('dark', next)
@@ -146,7 +135,17 @@ export default function App() {
   }
 
   const postToPreview = useCallback((message: Record<string, unknown>) => {
-    iframeRef.current?.contentWindow?.postMessage({ protocolVersion: 1, ...message }, location.origin)
+    previewIframeRef.current?.contentWindow?.postMessage({ protocolVersion: 1, ...message }, location.origin)
+  }, [])
+
+  const sendAdminSnapshot = useCallback(() => {
+    const current = projectRef.current
+    adminIframeRef.current?.contentWindow?.postMessage({
+      protocolVersion: 1,
+      type: 'mantle:admin-preview:snapshot',
+      revision: current.activeRevision,
+      snapshot: projectDeveloperConsole(current.activePlan),
+    }, location.origin)
   }, [])
 
   const sendSnapshot = useCallback(() => {
@@ -160,10 +159,7 @@ export default function App() {
   }, [postToPreview])
 
   const markPreviewReady = useCallback(() => {
-    if (!previewReadyRef.current) {
-      previewReadyRef.current = true
-      setPreviewReady(true)
-    }
+    previewReadyRef.current = true
     sendSnapshot()
   }, [sendSnapshot])
 
@@ -175,8 +171,9 @@ export default function App() {
       if (result.activation.patch.length === 0) sendSnapshot()
       else postToPreview({ type: 'mantle:preview:patch', ...result.activation })
     }
+    if (result.activated) sendAdminSnapshot()
     return { ...projectStateSummary(result.state), activated: result.activated }
-  }, [postToPreview, sendSnapshot])
+  }, [postToPreview, sendAdminSnapshot, sendSnapshot])
 
   const runMutation = useCallback((key: string, mutate: () => unknown) => {
     const replay = mutationReplayRef.current
@@ -210,9 +207,14 @@ export default function App() {
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      if (event.origin !== location.origin || event.source !== iframeRef.current?.contentWindow || !isMessage(event.data)) return
+      if (event.origin !== location.origin || !isMessage(event.data)) return
       const message = event.data
       if (message.protocolVersion !== 1) return
+      if (event.source === adminIframeRef.current?.contentWindow) {
+        if (message.type === 'mantle:admin-preview:ready') sendAdminSnapshot()
+        return
+      }
+      if (event.source !== previewIframeRef.current?.contentWindow) return
       if (message.type === 'mantle:preview:ready') return markPreviewReady()
       if (message.type === 'mantle:preview:resync') {
         resyncsRef.current += 1
@@ -221,11 +223,6 @@ export default function App() {
       }
       if (message.type === 'mantle:preview:applied' && Number.isInteger(message.revision)) {
         previewRevisionRef.current = Number(message.revision)
-        setPreviewStatus(`Preview active at revision ${message.revision}. Resyncs: ${resyncsRef.current}.`)
-        return
-      }
-      if (message.type === 'mantle:preview:error' && Array.isArray(message.diagnostics)) {
-        setPreviewStatus(`Preview rejected sync: ${message.diagnostics.map(diagnosticMessage).join(' ')}`)
         return
       }
       if (message.type !== 'mantle:preview:result' || typeof message.requestId !== 'string') return
@@ -236,7 +233,7 @@ export default function App() {
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [markPreviewReady, sendSnapshot])
+  }, [markPreviewReady, sendAdminSnapshot, sendSnapshot])
 
   useEffect(() => {
     let binding: WebMcpBinding | undefined
@@ -255,6 +252,7 @@ export default function App() {
             projectRef.current = result.state
             setProject(result.state)
             if (result.activated && previewReadyRef.current) postToPreview({ type: 'mantle:preview:patch', ...result.activation })
+            if (result.activated) sendAdminSnapshot()
             return result.response
           })
         }
@@ -277,11 +275,11 @@ export default function App() {
       disposed = true
       binding?.dispose()
     }
-  }, [commitPatch, invokePreviewTool, postToPreview, runMutation])
+  }, [commitPatch, invokePreviewTool, postToPreview, runMutation, sendAdminSnapshot])
 
   const copyStartingPrompt = async () => {
     const prompt = promptType === 'blank'
-      ? `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first to learn the current Mantle grammar and project state.\n2. Before changing the project, interview me about its actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. After confirmation, use the closest starter if helpful, then customize with builder_apply_manifest_patch.\n5. Repair validation errors from the returned diagnostics and test a public capability with builder_call_preview_tool.\n\nStarting context:\n${brief.trim()}`
+      ? `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first to learn the current Mantle grammar and project state.\n2. Interview me about its actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. Do not call builder_apply_starter. After confirmation, create the complete model from the empty document in one builder_apply_manifest_patch call.\n5. Repair validation errors from the returned diagnostics and test a public capability with builder_call_preview_tool.\n\nStarting context:\n${brief.trim()}`
       : `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Call builder_apply_starter with starter "${promptType}" and the returned project draftRevision so the host loads its premade Manifest. Do not recreate the starter.\n3. Learn from the returned Manifest, then customize it with builder_apply_manifest_patch.\n4. Repair validation errors with the returned draftRevision and diagnostics.\n5. Test a projected public capability with builder_call_preview_tool.\n\nService brief:\n${brief.trim()}`
     try {
       await navigator.clipboard.writeText(prompt)
@@ -324,30 +322,27 @@ export default function App() {
           <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label={darkMode ? 'Use light theme' : 'Use dark theme'} title={darkMode ? 'Use light theme' : 'Use dark theme'}>
             {darkMode ? <Sun /> : <Moon />}
           </Button>
-          <Button
-            variant={consolePinned ? 'secondary' : 'ghost'}
-            size="icon-sm"
-            onClick={toggleConsole}
-            aria-label={consolePinned ? 'Unpin developer console' : 'Pin developer console'}
-            aria-pressed={consolePinned}
-            title={consolePinned ? 'Unpin developer console' : 'Pin developer console'}
-          >
-            {consolePinned ? <PanelRightClose /> : <PanelRightOpen />}
-          </Button>
         </div>
       </header>
 
       <div className="toolbar-menu-backdrop fixed inset-x-0 bottom-0 top-14 z-40" aria-hidden="true" />
 
       <main className="fixed inset-x-0 bottom-0 top-14 z-10 flex min-w-0">
-        <section className={`relative min-w-0 flex-1 ${hasProject ? 'bg-white' : 'bg-transparent'}`}>
+        <section className={`relative min-w-0 flex-1 ${hasProject ? 'bg-background' : 'bg-transparent'}`}>
           <iframe
-            ref={iframeRef}
+            ref={adminIframeRef}
+            src="/_mantle/admin/index.html?preview=snapshot"
+            title="Mantle Admin Dev Console"
+            onLoad={sendAdminSnapshot}
+            className={`absolute inset-0 h-full w-full border-0 bg-background transition-opacity ${hasProject ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+          />
+          <iframe
+            ref={previewIframeRef}
             src="/preview"
-            title="Generated Mantle site preview"
+            title="Mantle runtime preview"
             allow="tools"
             onLoad={markPreviewReady}
-            className={`absolute inset-0 h-full w-full border-0 bg-white transition-opacity ${hasProject ? 'opacity-100' : 'opacity-0'}`}
+            className="hidden"
           />
           {!hasProject && (
             <div className="absolute inset-0 z-10 grid place-items-center p-5">
@@ -397,33 +392,7 @@ export default function App() {
               </section>
             </div>
           )}
-          {hasProject && (
-            <div className="pointer-events-none absolute bottom-3 left-3 max-w-[calc(100%-1.5rem)] truncate rounded-full border bg-background/90 px-2.5 py-1 text-xs text-muted-foreground shadow-sm backdrop-blur">
-              {previewReady ? previewStatus : 'Connecting preview…'}
-            </div>
-          )}
         </section>
-
-        {consolePinned && (
-          <aside className="absolute inset-0 z-40 flex min-w-0 flex-col border-l bg-background md:static md:w-[46vw] md:max-w-3xl" aria-label="Mantle Admin Dev Console">
-            <div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
-              <p className="text-sm font-semibold">Mantle Admin Dev Console</p>
-              <span className="ml-auto text-xs text-muted-foreground">/admin/dev</span>
-              <Button variant="ghost" size="icon-sm" onClick={toggleConsole} aria-label="Unpin developer console"><X /></Button>
-            </div>
-            {adminDevUrl ? (
-              <iframe className="min-h-0 flex-1 border-0 bg-background" src={adminDevUrl} title="Mantle Admin Dev Console" />
-            ) : (
-              <div className="grid min-h-0 flex-1 place-items-center p-8 text-center">
-                <div className="max-w-sm">
-                  <PanelRightOpen className="mx-auto size-8 text-muted-foreground" />
-                  <p className="mt-4 text-sm font-semibold">Developer console is pinned</p>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground">Connect the generated site's <code className="rounded bg-muted px-1 py-0.5">/admin/dev</code> URL with <code className="rounded bg-muted px-1 py-0.5">VITE_MANTLE_ADMIN_URL</code>.</p>
-                </div>
-              </div>
-            )}
-          </aside>
-        )}
       </main>
 
       {webMcpSupported === false && (
@@ -470,8 +439,4 @@ export default function App() {
 
 function isMessage(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
-function diagnosticMessage(value: unknown) {
-  return isMessage(value) && typeof value.message === 'string' ? value.message : String(value)
 }

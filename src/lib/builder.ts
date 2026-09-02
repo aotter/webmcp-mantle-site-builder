@@ -441,8 +441,8 @@ export function getStarted(state: ProjectState, preview: { ready: boolean; revis
   return {
     mantleVersion,
     workflow: [
-      'Choose the closest starter and call builder_apply_starter.',
-      'Use the returned document as the working example, then customize with builder_apply_manifest_patch.',
+      'For a premade flow, choose the closest starter and call builder_apply_starter.',
+      'For a blank flow, skip builder_apply_starter and create the complete model with builder_apply_manifest_patch.',
       'On rejection, repair the draft using its draftRevision and structured diagnostics.',
       'Call builder_call_preview_tool with a projected public tool to verify the active revision.',
     ],

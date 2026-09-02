@@ -1,7 +1,7 @@
 # WebMCP Mantle Site Builder
 
 Competition project for building Mantle sites through host WebMCP tools while a
-same-origin iframe renders the last valid compiled Manifest revision.
+same-origin iframe renders the last valid revision in Mantle Admin Dev Console.
 
 ## Stack
 
@@ -17,11 +17,10 @@ npm install
 npm run dev
 ```
 
-The host is served at `/`, the generated preview document at `/preview`, and
-the Worker health endpoint at `/api/health`.
-
-Set `VITE_MANTLE_ADMIN_URL` to the generated site's `/admin/dev` route to pin
-the existing Mantle developer console beside the preview.
+The host is served at `/`, Mantle Admin Dev Console is copied from the pinned
+unreleased package into `/_mantle/admin/`, and the hidden runtime preview lives
+at `/preview` for proxied WebMCP verification. The Worker health endpoint is
+available at `/api/health`.
 
 ## Verification
 
