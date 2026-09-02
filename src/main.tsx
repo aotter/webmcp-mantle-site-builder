@@ -3,7 +3,15 @@ import './index.css'
 import App from './App.tsx'
 import Preview from './Preview.tsx'
 
-document.documentElement.classList.toggle('dark', window.matchMedia('(prefers-color-scheme: dark)').matches)
+const colorScheme = window.matchMedia('(prefers-color-scheme: dark)')
+const applyColorScheme = () => {
+  const savedTheme = localStorage.getItem('mantle-builder-theme')
+  document.documentElement.classList.toggle('dark', savedTheme ? savedTheme === 'dark' : colorScheme.matches)
+}
+applyColorScheme()
+colorScheme.addEventListener('change', () => {
+  if (!localStorage.getItem('mantle-builder-theme')) applyColorScheme()
+})
 
 createRoot(document.getElementById('root')!).render(
   location.pathname === '/preview' ? <Preview /> : <App />,

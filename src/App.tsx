@@ -1,6 +1,6 @@
 import { bindWebMcp, type WebMcpBinding } from '@aotter/mantle-web/webmcp'
 import type { Operation } from 'fast-json-patch'
-import { Bot, Braces, Check, ChevronDown, Copy, FileJson2, PanelRightClose, PanelRightOpen, Sparkles, X } from 'lucide-react'
+import { Bot, Braces, Check, ChevronDown, Copy, FileJson2, Moon, PanelRightClose, PanelRightOpen, Sparkles, Sun, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -61,8 +61,9 @@ export default function App() {
   const [previewStatus, setPreviewStatus] = useState('Waiting for preview…')
   const [previewReady, setPreviewReady] = useState(false)
   const [previewResult, setPreviewResult] = useState('Preview tool has not been called.')
-  const [brief, setBrief] = useState('Build a member-only equipment checkout site with public catalog browsing, signed-in reservations, staff approvals, inventory tracking, and WebMCP tools for members and staff. Use Mantle built-in handlers only.')
+  const [brief, setBrief] = useState('Build a useful service with public, member, and staff workflows. Keep its data, auth, lifecycle, and business rules in Mantle. Expose governed operations through MCP and browser WebMCP, add human-facing pages only where useful, and deploy it to Cloudflare.')
   const [promptCopied, setPromptCopied] = useState(false)
+  const [darkMode, setDarkMode] = useState(() => document.documentElement.classList.contains('dark'))
   const [consolePinned, setConsolePinned] = useState(() => new URLSearchParams(location.search).has('console'))
   const projectRef = useRef(project)
   const iframeRef = useRef<HTMLIFrameElement>(null)
@@ -117,6 +118,13 @@ export default function App() {
     else url.searchParams.set('console', 'right')
     history.pushState(null, '', url)
     syncUiFromUrl()
+  }
+
+  const toggleTheme = () => {
+    const next = !darkMode
+    document.documentElement.classList.toggle('dark', next)
+    localStorage.setItem('mantle-builder-theme', next ? 'dark' : 'light')
+    setDarkMode(next)
   }
 
   const postToPreview = useCallback((message: Record<string, unknown>) => {
@@ -240,7 +248,7 @@ export default function App() {
   }
 
   const copyStartingPrompt = async () => {
-    const prompt = `Use the WebMCP tools exposed by this Mantle Site Builder to build the site below. First call builder_inspect_host, then apply small RFC 6902 patches with builder_apply_manifest_patch. Keep business logic in supported Mantle built-in handlers, preserve the last-known-good revision, and inspect the preview after each activation.\n\nSite brief:\n${brief.trim()}`
+    const prompt = `Use this Mantle Site Builder's WebMCP tools to turn the service brief below into a working, host-owned Mantle application. First call builder_inspect_host, then apply small RFC 6902 patches with builder_apply_manifest_patch. Describe the domain once as Schema, View, Procedure, and Trigger atoms in Mantle Manifest YAML. Use supported built-in handlers for business logic. Expose useful governed capabilities through HTTP/OpenAPI, MCP, and browser WebMCP; add Web or Admin surfaces only where people need them. Preserve the last-known-good revision, inspect each activated preview, and keep the result deployable to Cloudflare Workers with static assets and site-owned data and auth.\n\nService brief:\n${brief.trim()}`
     try {
       await navigator.clipboard.writeText(prompt)
       setPromptCopied(true)
@@ -254,9 +262,10 @@ export default function App() {
   const hasProject = Object.values(summary.atoms).some((names) => names.length > 0)
 
   return (
-    <div className="h-svh overflow-hidden bg-background text-foreground">
-      <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center gap-2 border-b bg-background/95 px-3 backdrop-blur sm:px-4">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"><Sparkles className="size-4" /></div>
+    <div className="relative h-svh overflow-hidden bg-background text-foreground">
+      <canvas className="night-tide" aria-hidden="true" />
+      <header className="fixed inset-x-0 top-0 z-50 flex h-14 items-center gap-2 border-b bg-background/55 px-3 shadow-sm backdrop-blur-2xl sm:px-4">
+        <img src="/mantle-mark.svg" alt="" className="mantle-mark size-7 shrink-0" />
         <p className="hidden text-sm font-semibold sm:block">Mantle Builder</p>
 
         <details name="toolbar-menu" data-toolbar-menu className="group relative">
@@ -310,37 +319,39 @@ export default function App() {
           >
             {consolePinned ? <PanelRightClose /> : <PanelRightOpen />}
           </Button>
+          <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label={darkMode ? 'Use light theme' : 'Use dark theme'} title={darkMode ? 'Use light theme' : 'Use dark theme'}>
+            {darkMode ? <Sun /> : <Moon />}
+          </Button>
         </div>
       </header>
 
       <div className="toolbar-menu-backdrop fixed inset-x-0 bottom-0 top-14 z-40" aria-hidden="true" />
 
-      <main className="fixed inset-x-0 bottom-0 top-14 flex min-w-0 bg-muted/30">
-        <section className="relative min-w-0 flex-1 bg-white">
+      <main className="fixed inset-x-0 bottom-0 top-14 z-10 flex min-w-0">
+        <section className={`relative min-w-0 flex-1 ${hasProject ? 'bg-white' : 'bg-transparent'}`}>
           <iframe
             ref={iframeRef}
             src="/preview"
             title="Generated Mantle site preview"
             allow="tools"
             onLoad={markPreviewReady}
-            className="absolute inset-0 h-full w-full border-0 bg-white"
+            className={`absolute inset-0 h-full w-full border-0 bg-white transition-opacity ${hasProject ? 'opacity-100' : 'opacity-0'}`}
           />
           {!hasProject && (
-            <div className="absolute inset-0 z-10 grid place-items-center bg-background/90 p-5 backdrop-blur-sm">
-              <section className="w-full max-w-2xl rounded-2xl border bg-card p-5 shadow-xl sm:p-7">
-                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground"><Sparkles className="size-4" /> Empty project</div>
-                <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">What should Mantle build?</h1>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">Describe the site, then copy a ready-to-run instruction into your browser agent.</p>
+            <div className="absolute inset-0 z-10 grid place-items-center p-5">
+              <section className="empty-project-glass w-full max-w-2xl rounded-2xl p-5 sm:p-7">
+                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Sparkles className="size-4" /> Agent-built · Agent-operated</div>
+                <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">Build a real service around your business logic.</h1>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">Tell your agent how your business works. It uses <a href="https://github.com/aotter/mantle" target="_blank" rel="noreferrer" className="font-medium text-foreground underline-offset-4 hover:underline">Mantle</a> to turn that logic into APIs, MCP, and WebMCP tools—ready to deploy on Cloudflare.</p>
                 <textarea
                   value={brief}
                   onChange={(event) => { setBrief(event.target.value); setPromptCopied(false) }}
-                  aria-label="Site brief"
+                  aria-label="Service brief"
                   rows={5}
-                  className="mt-5 w-full resize-y rounded-xl border bg-background p-3 text-sm leading-6 outline-none transition focus:border-ring focus:ring-3 focus:ring-ring/30"
+                  className="mt-5 w-full resize-y rounded-xl border bg-background/65 p-3 text-sm leading-6 shadow-inner outline-none backdrop-blur-md transition focus:border-ring focus:ring-3 focus:ring-ring/30"
                 />
                 <div className="mt-3 flex flex-wrap items-center gap-3">
-                  <Button onClick={copyStartingPrompt} disabled={!brief.trim()}>{promptCopied ? <Check /> : <Copy />}{promptCopied ? 'Copied for agent' : 'Copy starting prompt'}</Button>
-                  <span className="text-xs text-muted-foreground">{webMcpStatus}</span>
+                  <Button onClick={copyStartingPrompt} disabled={!brief.trim()}>{promptCopied ? <Check /> : <Copy />}{promptCopied ? 'Copied for agent' : 'Copy agent prompt'}</Button>
                 </div>
               </section>
             </div>
