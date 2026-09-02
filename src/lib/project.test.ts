@@ -59,8 +59,11 @@ describe('Manifest revision boundary', () => {
 
   it('starts from an official example and returns agent-readable grammar', () => {
     const initial = createProjectState(initialProjectDocument)
-    const guide = getStarted(initial, { ready: true, revision: 1 })
-    expect(guide.grammar.builtins.operations).toContain('create')
+    const guide = getStarted(initial, { ready: true, revision: 1 }, '# Mantle design atoms')
+    expect(guide.manifestReference).toEqual({
+      source: '@aotter/mantle/docs/design-atoms.md',
+      content: '# Mantle design atoms',
+    })
     expect(guide.starters.map(({ name }) => name)).toEqual(['intake', 'reservation', 'transaction', 'procurement'])
 
     for (const starter of starterNames) expect(applyStarter(initial, starter, 1).response.valid).toBe(true)

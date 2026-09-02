@@ -295,9 +295,12 @@ export default function App() {
         if (capability.name === 'builder_get_started') {
           const deployment = previewDeploymentRef.current
           if (deployment) await deployment
+          const reference = await fetch('/_mantle/design-atoms.md', { signal })
+          if (!reference.ok) throw new Error('Mantle Manifest reference is unavailable.')
           return getStarted(
             projectRef.current,
             { ready: deployment !== null, revision: projectRef.current.activeRevision },
+            await reference.text(),
             { id: currentProjectRef.current.id, name: currentProjectRef.current.name },
           )
         }

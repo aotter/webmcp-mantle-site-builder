@@ -1,5 +1,4 @@
 import { projectCallableCapabilities } from '@aotter/mantle-runtime'
-import { BUILTIN_OPS, LIFECYCLE_HOOKS, MCP_TRIGGER_SURFACES, STAFF_ROLES } from '@aotter/mantle-spec'
 import type { Operation } from 'fast-json-patch'
 
 import {
@@ -440,6 +439,7 @@ export const starterNames = Object.keys(starters) as StarterName[]
 export function getStarted(
   state: ProjectState,
   preview: { ready: boolean; revision: number },
+  manifestReference: string,
   project = { id: '', name: 'Untitled project' },
 ) {
   return {
@@ -450,25 +450,13 @@ export function getStarted(
       'On rejection, repair the draft using its draftRevision and structured diagnostics.',
       'Call builder_call_preview_tool with a projected public tool to verify the active revision.',
     ],
-    grammar: {
-      document: {
-        '/schemas/<name>': 'Stored entity shape.',
-        '/views/<name>': 'Typed read/query surface over a Schema.',
-        '/procedures/<name>': 'Typed operation using a built-in CRUD handler or a registered handler ref.',
-        '/triggers/<name>': 'HTTP, MCP, or lifecycle binding to a Procedure.',
-      },
-      invariants: [
-        'Every map key must equal metadata.name and kind must match its map.',
-        'Views reference existing Schemas; Triggers reference existing Procedures.',
-        'GET reads are Views. Procedure HTTP triggers use POST, PUT, PATCH, or DELETE.',
-        'Public MCP triggers project browser WebMCP tools; staff tools remain authenticated.',
-      ],
-      builtins: { operations: BUILTIN_OPS, lifecycleHooks: LIFECYCLE_HOOKS, mcpSurfaces: MCP_TRIGGER_SURFACES, staffRoles: STAFF_ROLES },
+    manifestReference: {
+      source: '@aotter/mantle/docs/design-atoms.md',
+      content: manifestReference,
     },
     limits: ['This Builder currently edits Manifest atoms only. Use built-in handlers; handler refs require generated TypeScript that this toolset cannot write yet.'],
     official: {
       developSkill: `https://github.com/aotter/mantle/blob/v${mantleVersion}/skills/develop/SKILL.md`,
-      manifestGrammar: `https://github.com/aotter/mantle/blob/v${mantleVersion}/packages/mantle-spec/src/domain/model/ManifestGrammar.ts`,
       fourAtomDecision: `https://github.com/aotter/mantle/blob/v${mantleVersion}/docs/adr/0001-four-atom-manifest-model.md`,
       starterExamples: 'https://github.com/aotter/mantle-starters/tree/develop/overlays',
     },
