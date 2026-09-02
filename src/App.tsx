@@ -392,10 +392,6 @@ export default function App() {
         </details>
 
         <div className="ml-auto flex items-center gap-1">
-          <Badge variant="outline" className="gap-1.5 bg-background/45 text-muted-foreground" title="This runtime is simulated in your browser. MCP connection URLs activate after deployment.">
-            <span className="size-1.5 rounded-full bg-amber-400" />
-            Sandbox <span className="hidden md:inline">· MCP connects after deploy</span>
-          </Badge>
           <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label={darkMode ? 'Use light theme' : 'Use dark theme'} title={darkMode ? 'Use light theme' : 'Use dark theme'}>
             {darkMode ? <Sun /> : <Moon />}
           </Button>
@@ -407,15 +403,15 @@ export default function App() {
       <main className="fixed inset-x-0 bottom-0 top-14 z-10 flex min-w-0">
         <section className={`relative min-w-0 flex-1 ${hasProject ? 'flex flex-col bg-muted/35' : 'bg-transparent'}`}>
           {hasProject && <div className="min-h-0 flex-1 overflow-auto bg-muted/35 p-2 sm:p-3">
-            <div className={`mx-auto flex h-full flex-col overflow-hidden rounded-2xl border border-slate-600/70 bg-slate-950 p-1.5 shadow-2xl transition-[width] duration-200 motion-reduce:transition-none ${previewViewport === 'mobile' ? 'w-[min(402px,100%)]' : 'w-full'}`}>
-              <div className="flex h-9 shrink-0 items-center gap-2 px-2 text-slate-200">
+            <div className={`mx-auto flex h-full flex-col overflow-hidden rounded-2xl border border-primary/35 bg-secondary p-1.5 text-secondary-foreground shadow-2xl shadow-primary/10 transition-[width] duration-200 motion-reduce:transition-none ${previewViewport === 'mobile' ? 'w-[min(402px,100%)]' : 'w-full'}`}>
+              <div className="flex h-9 shrink-0 items-center gap-2 px-2">
                 <span className="text-xs font-semibold">Preview</span>
-                <span className="text-xs text-slate-500">Admin</span>
-                <div className="ml-auto flex items-center rounded-lg bg-black/35 p-0.5" role="group" aria-label="Preview viewport">
-                  <Button variant="ghost" size="sm" className={previewViewport === 'desktop' ? 'bg-white/15 text-white hover:bg-white/20' : 'text-slate-400 hover:bg-white/10 hover:text-white'} aria-pressed={previewViewport === 'desktop'} onClick={() => setPreviewViewport('desktop')}>
+                <span className="text-xs text-muted-foreground">Admin</span>
+                <div className="ml-auto flex items-center rounded-lg bg-background/35 p-0.5" role="group" aria-label="Preview viewport">
+                  <Button variant="ghost" size="sm" className={previewViewport === 'desktop' ? 'bg-background text-foreground shadow-sm hover:bg-background' : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'} aria-pressed={previewViewport === 'desktop'} onClick={() => setPreviewViewport('desktop')}>
                   <Monitor /> <span className="hidden sm:inline">Desktop</span>
                   </Button>
-                  <Button variant="ghost" size="sm" className={previewViewport === 'mobile' ? 'bg-white/15 text-white hover:bg-white/20' : 'text-slate-400 hover:bg-white/10 hover:text-white'} aria-pressed={previewViewport === 'mobile'} onClick={() => setPreviewViewport('mobile')}>
+                  <Button variant="ghost" size="sm" className={previewViewport === 'mobile' ? 'bg-background text-foreground shadow-sm hover:bg-background' : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'} aria-pressed={previewViewport === 'mobile'} onClick={() => setPreviewViewport('mobile')}>
                   <Smartphone /> <span className="hidden sm:inline">Mobile</span>
                   </Button>
                 </div>
