@@ -1,5 +1,4 @@
 import { bindWebMcp, type WebMcpBinding } from '@aotter/mantle-web/webmcp'
-import { projectDeveloperConsole } from '@aotter/mantle-admin'
 import type { Operation } from 'fast-json-patch'
 import { Bot, Braces, Check, ChevronDown, Copy, FileJson2, Moon, Plus, Sparkles, Sun, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -36,6 +35,7 @@ import {
   type ProjectRecord,
 } from '@/lib/project-store'
 import { publicProcedureCapability, publicViewCapability } from '@/lib/webmcp'
+import { createPreviewDeployment, type PreviewDeployment } from '@/lib/preview-deployment'
 
 const promptPresets = [
   { name: 'intake', label: 'Intake', brief: 'Build a public intake flow that collects structured requests and gives staff a review queue.' },
@@ -95,11 +95,6 @@ const hostCapabilities = [
   }),
 ]
 
-interface PendingPreviewCall {
-  resolve(value: unknown): void
-  reject(reason: unknown): void
-}
-
 export default function App() {
   const [currentProject, setCurrentProject] = useState(createProjectRecord)
   const [projects, setProjects] = useState<ProjectRecord[]>(() => [currentProject])
@@ -114,13 +109,9 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(() => document.documentElement.classList.contains('dark'))
   const currentProjectRef = useRef(currentProject)
   const projectRef = useRef(project)
-  const previewIframeRef = useRef<HTMLIFrameElement>(null)
   const adminIframeRef = useRef<HTMLIFrameElement>(null)
   const buildDialogRef = useRef<HTMLDialogElement>(null)
-  const previewReadyRef = useRef(false)
-  const previewRevisionRef = useRef(0)
-  const resyncsRef = useRef(0)
-  const pendingRef = useRef(new Map<string, PendingPreviewCall>())
+  const previewDeploymentRef = useRef<Promise<PreviewDeployment> | null>(null)
   const mutationReplayRef = useRef<{ key: string; revision: number; response: unknown } | undefined>(undefined)
   const closeMenus = useCallback(() => {
     document.querySelectorAll<HTMLDetailsElement>('[data-toolbar-menu][open]').forEach((menu) => { menu.open = false })
@@ -161,46 +152,22 @@ export default function App() {
     setDarkMode(next)
   }
 
-  const postToPreview = useCallback((message: Record<string, unknown>) => {
-    previewIframeRef.current?.contentWindow?.postMessage({ protocolVersion: 1, ...message }, location.origin)
+  const installPreviewDeployment = useCallback((state: ReturnType<typeof createProjectState>, record: ProjectRecord) => {
+    const deployment = createPreviewDeployment(state.activePlan, { id: record.id, name: record.name }, location.origin)
+    previewDeploymentRef.current = deployment
+    void deployment.catch((error) => console.error('Sandbox deployment failed.', error))
   }, [])
-
-  const sendAdminSnapshot = useCallback(() => {
-    const current = projectRef.current
-    adminIframeRef.current?.contentWindow?.postMessage({
-      protocolVersion: 1,
-      type: 'mantle:admin-preview:snapshot',
-      revision: current.activeRevision,
-      snapshot: projectDeveloperConsole(current.activePlan),
-    }, location.origin)
-  }, [])
-
-  const sendSnapshot = useCallback(() => {
-    if (!previewReadyRef.current) return
-    const current = projectRef.current
-    postToPreview({
-      type: 'mantle:preview:snapshot',
-      revision: current.activeRevision,
-      document: current.activeDocument,
-    })
-  }, [postToPreview])
-
-  const markPreviewReady = useCallback(() => {
-    previewReadyRef.current = true
-    sendSnapshot()
-  }, [sendSnapshot])
 
   const activateProject = useCallback((record: ProjectRecord) => {
     const state = createProjectState(record.manifest)
     currentProjectRef.current = record
     projectRef.current = state
+    installPreviewDeployment(state, record)
     setCurrentProject(record)
     setProject(state)
     selectProjectId(record.id)
     mutationReplayRef.current = undefined
-    sendSnapshot()
-    sendAdminSnapshot()
-  }, [sendAdminSnapshot, sendSnapshot])
+  }, [installPreviewDeployment])
 
   useEffect(() => {
     let cancelled = false
@@ -243,18 +210,14 @@ export default function App() {
     const result = applyProjectPatch(projectRef.current, baseRevision, patch)
     if (result.activated) await persistActiveProject(result.state, projectName)
     projectRef.current = result.state
+    if (result.activated) installPreviewDeployment(result.state, currentProjectRef.current)
     setProject(result.state)
-    if (result.activated && previewReadyRef.current) {
-      if (result.activation.patch.length === 0) sendSnapshot()
-      else postToPreview({ type: 'mantle:preview:patch', ...result.activation })
-    }
-    if (result.activated) sendAdminSnapshot()
     return {
       ...projectStateSummary(result.state),
       activated: result.activated,
       project: { id: currentProjectRef.current.id, name: currentProjectRef.current.name },
     }
-  }, [persistActiveProject, postToPreview, sendAdminSnapshot, sendSnapshot])
+  }, [installPreviewDeployment, persistActiveProject])
 
   const runMutation = useCallback(async (key: string, mutate: () => Promise<unknown>) => {
     const replay = mutationReplayRef.current
@@ -295,57 +258,30 @@ export default function App() {
     }
   }, [activateProject, closeMenus, projects])
 
-  const invokePreviewTool = useCallback((name: string, input: Record<string, unknown>, signal?: AbortSignal) => {
-    if (!previewReadyRef.current) return Promise.reject(new Error('Preview is not ready.'))
-    const requestId = crypto.randomUUID()
-    return new Promise<unknown>((resolve, reject) => {
-      const timeout = window.setTimeout(() => {
-        pendingRef.current.delete(requestId)
-        reject(new Error(`Preview tool '${name}' timed out.`))
-      }, 5_000)
-      const settle = (callback: (value: unknown) => void, value: unknown) => {
-        clearTimeout(timeout)
-        pendingRef.current.delete(requestId)
-        callback(value)
-      }
-      pendingRef.current.set(requestId, {
-        resolve: (value) => settle(resolve, value),
-        reject: (reason) => settle(reject, reason instanceof Error ? reason : new Error(String(reason))),
-      })
-      signal?.addEventListener('abort', () => settle(reject, signal.reason), { once: true })
-      postToPreview({ type: 'mantle:preview:invoke', requestId, name, input })
-    })
-  }, [postToPreview])
+  const invokePreviewTool = useCallback(async (name: string, input: Record<string, unknown>, signal?: AbortSignal) => {
+    const deployment = previewDeploymentRef.current
+    if (!deployment) throw new Error('Sandbox runtime is not ready.')
+    return (await deployment).invoke(name, input, signal)
+  }, [])
 
   useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      if (event.origin !== location.origin || !isMessage(event.data)) return
-      const message = event.data
-      if (message.protocolVersion !== 1) return
-      if (event.source === adminIframeRef.current?.contentWindow) {
-        if (message.type === 'mantle:admin-preview:ready') sendAdminSnapshot()
-        return
+    const onMessage = async (event: MessageEvent) => {
+      if (event.origin !== location.origin || event.source !== adminIframeRef.current?.contentWindow || !isHostApiMessage(event.data)) return
+      const port = event.ports[0]
+      if (!port) return
+      try {
+        const deployment = previewDeploymentRef.current
+        if (!deployment) throw new Error('Sandbox runtime is not ready.')
+        const response = await (await deployment).fetch(readHostApiRequest(event.data.request))
+        const body = await response.arrayBuffer()
+        port.postMessage({ ok: true, status: response.status, headers: [...response.headers], body }, [body])
+      } catch (error) {
+        port.postMessage({ ok: false, error: error instanceof Error ? error.message : 'Admin API request failed.' })
       }
-      if (event.source !== previewIframeRef.current?.contentWindow) return
-      if (message.type === 'mantle:preview:ready') return markPreviewReady()
-      if (message.type === 'mantle:preview:resync') {
-        resyncsRef.current += 1
-        sendSnapshot()
-        return
-      }
-      if (message.type === 'mantle:preview:applied' && Number.isInteger(message.revision)) {
-        previewRevisionRef.current = Number(message.revision)
-        return
-      }
-      if (message.type !== 'mantle:preview:result' || typeof message.requestId !== 'string') return
-      const pending = pendingRef.current.get(message.requestId)
-      if (!pending) return
-      if (message.ok) pending.resolve(message.result)
-      else pending.reject(new Error(typeof message.error === 'string' ? message.error : 'Preview tool failed.'))
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [markPreviewReady, sendAdminSnapshot, sendSnapshot])
+  }, [])
 
   useEffect(() => {
     if (!projectsReady) return
@@ -355,9 +291,11 @@ export default function App() {
       capabilities: hostCapabilities,
       invoke: async (capability, input, signal) => {
         if (capability.name === 'builder_get_started') {
+          const deployment = previewDeploymentRef.current
+          if (deployment) await deployment
           return getStarted(
             projectRef.current,
-            { ready: previewReadyRef.current, revision: previewRevisionRef.current },
+            { ready: deployment !== null, revision: projectRef.current.activeRevision },
             { id: currentProjectRef.current.id, name: currentProjectRef.current.name },
           )
         }
@@ -369,9 +307,8 @@ export default function App() {
             const result = applyStarter(projectRef.current, input.starter as StarterName, Number(input.baseRevision), input.replace === true)
             if (result.activated) await persistActiveProject(result.state, projectName)
             projectRef.current = result.state
+            if (result.activated) installPreviewDeployment(result.state, currentProjectRef.current)
             setProject(result.state)
-            if (result.activated && previewReadyRef.current) postToPreview({ type: 'mantle:preview:patch', ...result.activation })
-            if (result.activated) sendAdminSnapshot()
             return {
               ...result.response,
               project: { id: currentProjectRef.current.id, name: currentProjectRef.current.name },
@@ -398,7 +335,7 @@ export default function App() {
       disposed = true
       binding?.dispose()
     }
-  }, [commitPatch, invokePreviewTool, persistActiveProject, postToPreview, projectsReady, runMutation, sendAdminSnapshot])
+  }, [commitPatch, installPreviewDeployment, invokePreviewTool, persistActiveProject, projectsReady, runMutation])
 
   const copyStartingPrompt = async () => {
     const prompt = promptType === 'blank'
@@ -464,19 +401,11 @@ export default function App() {
       <main className="fixed inset-x-0 bottom-0 top-14 z-10 flex min-w-0">
         <section className={`relative min-w-0 flex-1 ${hasProject ? 'bg-background' : 'bg-transparent'}`}>
           <iframe
+            key={`${currentProject.id}:${project.activeRevision}`}
             ref={adminIframeRef}
-            src="/_mantle/admin/index.html?preview=snapshot"
-            title="Mantle Admin Dev Console"
-            onLoad={sendAdminSnapshot}
+            src="/_mantle/admin/index.html"
+            title="Mantle Admin"
             className={`absolute inset-0 h-full w-full border-0 bg-background transition-opacity ${hasProject ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
-          />
-          <iframe
-            ref={previewIframeRef}
-            src="/preview"
-            title="Mantle runtime preview"
-            allow="tools"
-            onLoad={markPreviewReady}
-            className="hidden"
           />
           {!hasProject && (
             <div className="absolute inset-0 z-10 grid place-items-center p-5">
@@ -586,6 +515,39 @@ export default function App() {
 
 function isMessage(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+interface HostApiMessage {
+  protocolVersion: 1
+  type: 'mantle:host-api:request'
+  request: {
+    url: string
+    method: string
+    headers: [string, string][]
+    body: ArrayBuffer | null
+  }
+}
+
+function isHostApiMessage(value: unknown): value is HostApiMessage {
+  if (!isMessage(value) || value.protocolVersion !== 1 || value.type !== 'mantle:host-api:request' || !isMessage(value.request)) return false
+  const request = value.request
+  return typeof request.url === 'string'
+    && typeof request.method === 'string'
+    && Array.isArray(request.headers)
+    && request.headers.every((header) => Array.isArray(header) && header.length === 2 && header.every((part) => typeof part === 'string'))
+    && (request.body === null || request.body instanceof ArrayBuffer)
+}
+
+function readHostApiRequest(request: HostApiMessage['request']): Request {
+  const url = new URL(request.url)
+  if (url.origin !== location.origin || (!url.pathname.startsWith('/admin/api/') && !url.pathname.startsWith('/api/auth/'))) {
+    throw new TypeError('Admin iframe requested an unsupported host route.')
+  }
+  return new Request(url, {
+    method: request.method,
+    headers: request.headers,
+    ...(request.body ? { body: request.body } : {}),
+  })
 }
 
 function readProjectName(value: unknown): string {

@@ -157,45 +157,6 @@ export function readPatch(value: unknown): Operation[] {
   return value as Operation[]
 }
 
-export interface PreviewState {
-  document: ProjectDocument | null
-  revision: number
-  plan: RuntimePlan | null
-}
-
-export function emptyPreviewState(): PreviewState {
-  return { document: null, revision: 0, plan: null }
-}
-
-export function applyPreviewSync(state: PreviewState, message: unknown) {
-  if (!isRecord(message)) return { kind: 'ignored' as const, state }
-  if (message.type === 'mantle:preview:snapshot') {
-    if (!Number.isInteger(message.revision) || !isRecord(message.document)) throw new TypeError('Invalid preview snapshot.')
-    assertProjectDocument(message.document)
-    return activatePreview(message.document, Number(message.revision))
-  }
-  if (message.type !== 'mantle:preview:patch') return { kind: 'ignored' as const, state }
-  if (!Number.isInteger(message.baseRevision) || !Number.isInteger(message.revision)) throw new TypeError('Invalid preview patch revision.')
-  if (!state.document || message.baseRevision !== state.revision) {
-    return {
-      kind: 'resync' as const,
-      state,
-      expectedRevision: state.revision,
-      receivedRevision: Number(message.baseRevision),
-    }
-  }
-  return activatePreview(applyJsonPatch(state.document, readPatch(message.patch)), Number(message.revision))
-}
-
-function activatePreview(document: ProjectDocument, revision: number) {
-  const compilation = compileProjectDocument(document)
-  if (!compilation.ok) return { kind: 'error' as const, diagnostics: compilation.diagnostics }
-  return {
-    kind: 'applied' as const,
-    state: { document: structuredClone(document), revision, plan: compilation.plan },
-  }
-}
-
 function applyJsonPatch<T>(document: T, patch: readonly Operation[]): T {
   return jsonPatch.applyPatch(document, [...patch], true, false, true).newDocument
 }

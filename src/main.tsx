@@ -1,7 +1,6 @@
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
-import Preview from './Preview.tsx'
 
 const colorScheme = window.matchMedia('(prefers-color-scheme: dark)')
 const applyColorScheme = () => {
@@ -14,5 +13,5 @@ colorScheme.addEventListener('change', () => {
 })
 
 createRoot(document.getElementById('root')!).render(
-  location.pathname === '/preview' ? <Preview /> : <App />,
+  <App />,
 )

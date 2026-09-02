@@ -1,15 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { projectDeveloperConsole } from '@aotter/mantle-admin'
 
 import {
-  applyPreviewSync,
   applyProjectPatch,
   createProjectState,
-  emptyPreviewState,
   initialProjectDocument,
   type ProjectDocument,
 } from './project'
 import { applyStarter, getStarted, publicTools, starterNames } from './builder'
+import { createPreviewDeployment } from './preview-deployment'
 
 const fixtureDocument: ProjectDocument = {
   schemas: {
@@ -33,7 +31,7 @@ const fixtureDocument: ProjectDocument = {
 }
 
 describe('Manifest revision boundary', () => {
-  it('keeps the preview on the last valid revision and resynchronizes mismatches', () => {
+  it('keeps the active deployment on the last valid revision', () => {
     expect(createProjectState(initialProjectDocument).activePlan.views).toEqual({})
 
     const initial = createProjectState(fixtureDocument)
@@ -48,24 +46,6 @@ describe('Manifest revision boundary', () => {
     expect(invalid.activated).toBe(false)
     expect(invalid.state.activeRevision).toBe(2)
     expect(invalid.state.diagnostics[0]?.path).toBe('/views/items/spec/from')
-
-    const snapshot = applyPreviewSync(emptyPreviewState(), {
-      type: 'mantle:preview:snapshot',
-      revision: valid.state.activeRevision,
-      document: valid.state.activeDocument,
-    })
-    expect(snapshot.kind).toBe('applied')
-    if (snapshot.kind !== 'applied') throw new Error('Expected snapshot activation.')
-
-    const mismatch = applyPreviewSync(snapshot.state, {
-      type: 'mantle:preview:patch',
-      baseRevision: 99,
-      revision: 100,
-      patch: [{ op: 'replace', path: '/views/items/spec/title', value: 'Wrong base' }],
-    })
-    expect(mismatch.kind).toBe('resync')
-    if (mismatch.kind !== 'resync') throw new Error('Expected a resync request.')
-    expect(mismatch.state.revision).toBe(2)
   })
 
   it('does not mutate a draft when a JSON Patch fails halfway through', () => {
@@ -89,8 +69,28 @@ describe('Manifest revision boundary', () => {
     expect(started.response.valid).toBe(true)
     expect(started.response.document.triggers['place-order-mcp']?.spec.source.kind).toBe('mcp')
     expect(publicTools(started.state).some(({ ownerName }) => ownerName === 'place-order')).toBe(true)
-    expect(projectDeveloperConsole(started.state.activePlan).graph.atoms).toContainEqual(expect.objectContaining({ id: 'Trigger:place-order-mcp' }))
     expect(applyStarter(initial, 'procurement', 1).response.document.triggers['review-requisition-mcp']?.spec.source).toMatchObject({ kind: 'mcp', surface: 'staff' })
     expect(() => applyStarter(started.state, 'intake', 2)).toThrow('replace: true')
+  })
+
+  it('serves Admin and invokes public tools through one host runtime', async () => {
+    const started = applyStarter(createProjectState(initialProjectDocument), 'intake', 1)
+    const deployment = await createPreviewDeployment(started.state.activePlan, { id: 'test', name: 'Customer intake' }, 'https://builder.test')
+
+    const developer = await deployment.fetch(new Request('https://builder.test/admin/api/developer-console'))
+    expect(developer.status).toBe(200)
+    await expect(developer.json()).resolves.toMatchObject({
+      graph: { atoms: expect.arrayContaining([expect.objectContaining({ id: 'Trigger:submit-request-mcp' })]) },
+    })
+
+    await expect(deployment.invoke('submit_request', {
+      name: 'Ada',
+      email: 'ada@example.com',
+      message: 'Please call me.',
+    })).resolves.toMatchObject({ collection: 'requests', data: { name: 'Ada' } })
+
+    const queue = await deployment.fetch(new Request('https://builder.test/admin/api/views/recent-requests'))
+    expect(queue.status).toBe(200)
+    await expect(queue.json()).resolves.toMatchObject({ data: { rows: [expect.objectContaining({ name: 'Ada' })] } })
   })
 })
