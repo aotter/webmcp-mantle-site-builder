@@ -126,5 +126,13 @@
     }
   html {
     @apply font-sans;
-    }
+  }
+}
+
+.toolbar-menu-backdrop {
+  display: none;
+}
+
+body:has([data-toolbar-menu][open]) .toolbar-menu-backdrop {
+  display: block;
 }

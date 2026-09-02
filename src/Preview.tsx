@@ -1,5 +1,4 @@
 import { bindWebMcp, type WebMcpBinding } from '@aotter/mantle-web/webmcp'
-import { Boxes, Search, ShoppingCart } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { applyPreviewSync, emptyPreviewState, type PreviewState } from '@/lib/project'
@@ -7,12 +6,6 @@ import { publicViewCapability } from '@/lib/webmcp'
 
 const previewCapabilities = [
   publicViewCapability('preview_inspect_site', 'Inspect the active Mantle generated-site preview.'),
-]
-
-const sampleItems = [
-  { sku: 'CAM-01', name: 'Field camera', quantity: 12 },
-  { sku: 'MIC-04', name: 'Studio microphone', quantity: 7 },
-  { sku: 'LGT-02', name: 'Panel light', quantity: 18 },
 ]
 
 export default function Preview() {
@@ -108,13 +101,10 @@ export default function Preview() {
   }, [])
 
   const title = viewTitle(preview)
+  if (!preview.plan || Object.keys(preview.plan.views).length === 0) return <div className="min-h-svh bg-white" />
 
   return (
     <div className="min-h-svh bg-white text-neutral-950">
-      <header className="flex h-14 items-center border-b px-5">
-        <div className="flex items-center gap-2 font-semibold"><Boxes className="size-5" /> Northstar Supply</div>
-        <nav className="ml-auto flex items-center gap-4 text-sm text-neutral-600"><span>Catalog</span><span>About</span><ShoppingCart className="size-4" /></nav>
-      </header>
       <main className="mx-auto max-w-5xl px-5 py-8">
         <div className="flex flex-wrap items-end gap-3">
           <div>
@@ -123,16 +113,7 @@ export default function Preview() {
           </div>
           <span className="ml-auto rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">Active revision {preview.revision}</span>
         </div>
-        <div className="mt-6 flex items-center gap-2 rounded-lg border px-3 py-2 text-sm text-neutral-500"><Search className="size-4" /> Search inventory</div>
-        <div className="mt-5 grid gap-3 sm:grid-cols-3">
-          {sampleItems.map((item) => (
-            <article key={item.sku} className="rounded-xl border bg-neutral-50 p-4">
-              <p className="font-mono text-xs text-neutral-500">{item.sku}</p>
-              <h2 className="mt-3 font-medium">{item.name}</h2>
-              <p className="mt-1 text-sm text-neutral-600">{item.quantity} in stock</p>
-            </article>
-          ))}
-        </div>
+        <div className="mt-6 rounded-xl border border-dashed bg-neutral-50 p-8 text-center text-sm text-neutral-500">This generated view has no records yet.</div>
         <footer className="mt-8 flex flex-wrap gap-3 border-t pt-4 text-xs text-neutral-500">
           <span>{preview.plan ? 'Mantle RuntimePlan compiled' : 'Waiting for Manifest snapshot'}</span>
           <span>·</span>
@@ -146,10 +127,10 @@ export default function Preview() {
 }
 
 function viewTitle(preview: PreviewState) {
-  const value = preview.document?.views.inventory.spec.title
+  const value = preview.document ? Object.values(preview.document.views)[0]?.spec.title : undefined
   if (typeof value === 'string') return value
   if (value && typeof value === 'object') return Object.values(value)[0] ?? 'Inventory'
-  return 'Loading preview…'
+  return 'Untitled view'
 }
 
 function isMessage(value: unknown): value is Record<string, unknown> {

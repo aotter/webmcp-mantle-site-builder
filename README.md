@@ -20,6 +20,9 @@ npm run dev
 The host is served at `/`, the generated preview document at `/preview`, and
 the Worker health endpoint at `/api/health`.
 
+Set `VITE_MANTLE_ADMIN_URL` to the generated site's `/admin/dev` route to pin
+the existing Mantle developer console beside the preview.
+
 ## Verification
 
 ```bash

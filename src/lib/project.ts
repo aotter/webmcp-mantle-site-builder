@@ -28,79 +28,10 @@ export interface ProjectState {
 }
 
 export const initialProjectDocument: ProjectDocument = {
-  schemas: {
-    'inventory-items': {
-      apiVersion: 'cms.mantle.aotter.net/v1',
-      kind: 'Schema',
-      metadata: { name: 'inventory-items' },
-      spec: {
-        title: 'Inventory items',
-        description: 'Items available in the generated preview.',
-        schema: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['sku', 'name', 'quantity'],
-          properties: {
-            sku: { type: 'string', minLength: 1 },
-            name: { type: 'string', minLength: 1 },
-            quantity: { type: 'integer', minimum: 0 },
-          },
-        },
-        uniqueIndexes: [['sku']],
-        indexes: [['quantity']],
-        searchableFields: ['sku', 'name'],
-        lifecycle: 'operational',
-      },
-    },
-  },
-  views: {
-    inventory: {
-      apiVersion: 'cms.mantle.aotter.net/v1',
-      kind: 'View',
-      metadata: { name: 'inventory' },
-      spec: {
-        title: 'Inventory',
-        surface: 'public',
-        from: 'inventory-items',
-        fields: ['id', 'sku', 'name', 'quantity'],
-        orderBy: [{ field: 'name', direction: 'asc' }],
-        limit: 100,
-      },
-    },
-  },
-  procedures: {
-    'create-inventory-item': {
-      apiVersion: 'cms.mantle.aotter.net/v1',
-      kind: 'Procedure',
-      metadata: { name: 'create-inventory-item' },
-      spec: {
-        title: 'Create inventory item',
-        input: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['sku', 'name', 'quantity'],
-          properties: {
-            sku: { type: 'string', minLength: 1 },
-            name: { type: 'string', minLength: 1 },
-            quantity: { type: 'integer', minimum: 0 },
-          },
-        },
-        output: { type: 'object' },
-        handler: { kind: 'builtin', op: 'create', schema: 'inventory-items' },
-      },
-    },
-  },
-  triggers: {
-    'create-inventory-item-mcp': {
-      apiVersion: 'cms.mantle.aotter.net/v1',
-      kind: 'Trigger',
-      metadata: { name: 'create-inventory-item-mcp' },
-      spec: {
-        source: { kind: 'mcp', surface: 'public' },
-        target: { procedure: 'create-inventory-item' },
-      },
-    },
-  },
+  schemas: {},
+  views: {},
+  procedures: {},
+  triggers: {},
 }
 
 const groups = {
