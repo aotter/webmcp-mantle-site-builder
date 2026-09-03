@@ -12,9 +12,9 @@ import {
 import { publicProcedureCapability, publicViewCapability } from './webmcp'
 
 const apiVersion = 'cms.mantle.aotter.net/v1' as const
-export const mantleVersion = '0.1.0-alpha.14'
-export const runtimeSourceRevision = '620252551b012295a6bb882de4274213e66fe4dd'
-export const adminSourceRevision = 'c00b7e9b7399c6c3ff478c35aa7d0653a53e7a2e'
+export const mantleVersion = '0.1.0-alpha.15'
+export const runtimeSourceRevision = 'b2a6e04ff5820c121d660e6b4f5786884f002cfd'
+export const adminSourceRevision = 'b2a6e04ff5820c121d660e6b4f5786884f002cfd'
 
 const presets = {
   intake: {
@@ -573,9 +573,9 @@ export function proposePreset(state: ProjectState, name: PresetName, baseRevisio
 
 export function startingPrompt(type: PresetName | 'blank', brief: string) {
   if (type === 'blank') {
-    return `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first.\n2. Interview me about actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. After confirmation, choose a concise projectName and submit one complete builder_apply_manifest_patch call with the returned projectId and revision.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then call builder_call_preview_tool with that projectId and revision to test a projected public capability.\n\nStarting context:\n${brief.trim()}`
+    return `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first.\n2. Interview me about actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. After confirmation, choose a concise projectName and make one complete builder_apply_manifest_patch call with { projectId, baseRevision: revision, projectName, patch }.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then test a projected public capability with builder_call_preview_tool using { projectId, baseRevision: currentRevision, name, input }.\n\nStarting context:\n${brief.trim()}`
   }
-  return `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Choose a concise projectName, then call builder_apply_preset with the returned projectId and revision, preset "${type}", and projectName. The host supplies the premade Manifest.\n3. Customize it with builder_apply_manifest_patch using the same projectId, current revision, and projectName.\n4. If validation fails, correct the patch against the unchanged currentRevision.\n5. Call builder_call_preview_tool with that projectId and revision to test a projected public capability.\n\nService brief:\n${brief.trim()}`
+  return `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Choose a concise projectName, then call builder_apply_preset with { projectId, baseRevision: revision, preset: "${type}", projectName }. The host supplies the premade Manifest.\n3. Discuss how the preset should fit my actors, data, operations, permissions, and entry points. Summarize the proposed changes and wait for my confirmation.\n4. After confirmation, call builder_apply_manifest_patch with { projectId, baseRevision: currentRevision, projectName, patch } when changes are needed.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then test a projected public capability with builder_call_preview_tool using { projectId, baseRevision: currentRevision, name, input }.\n\nService brief:\n${brief.trim()}`
 }
 
 export function publicTools(state: Pick<ProjectState, 'plan'>) {

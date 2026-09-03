@@ -78,7 +78,9 @@ This ZIP is a coding-agent handoff, not a ready-to-run application. Its source o
 4. Inspect the Manifest before adding code. Keep business rules in Schema, View, Procedure, and Trigger resources.
 5. Implement only consumer-owned gaps the Manifest cannot express: handler refs, frontend composition, provider configuration, and equivalent project wiring.
 6. Treat \`examples/register-webmcp.example.ts\` as a reference. Replace every placeholder from the Manifest and current route wiring.
-7. Run the generated project's own Mantle validation and generation scripts, then its typecheck, tests, and production build.
+7. Run only the verification scripts declared by the generated project's \`package.json\`: Mantle validation/generation, typecheck, any available tests, production build, and Worker dry-run. Do not invent a test command when no test script exists.
+
+The default production Admin uses self-managed GitHub OAuth. After the first deploy, follow \`DEPLOY.md\` to configure the GitHub OAuth App, Worker variables and secrets, then sign in as the initial owner. Never put secret values in source, the handoff ZIP, or agent chat.
 
 Do not copy Builder sandbox identities or runtime records into the generated service.
 `
@@ -152,7 +154,7 @@ Complete these steps only after a coding agent has provisioned the Blank project
 
 1. Install dependencies with the package manager recorded by the generated project.
 2. Run the project's documented Mantle validation and generation scripts.
-3. Run its typecheck, tests, and production build.
+3. Run its declared typecheck, test (when present), and production build scripts.
 4. Review the generated routes, Cloudflare bindings, auth mode, and required secrets. Confirm which public site, Admin, API, MCP, and browser WebMCP surfaces the project actually exposes.
 
 Use the scripts declared by the generated project. A pinned Blank project currently exposes this check loop:
@@ -162,9 +164,10 @@ pnpm install --frozen-lockfile
 pnpm validate
 pnpm generate
 pnpm typecheck
-pnpm test
 pnpm build
 \`\`\`
+
+Run \`pnpm test\` only when the generated \`package.json\` declares a \`test\` script.
 
 ## Push to GitHub
 
@@ -183,13 +186,12 @@ gh repo create <owner>/<repository> --private --source=. --remote=origin --push
 
 Replace \`--private\` with \`--public\` only when the user explicitly chooses public visibility.
 
-## Deploy to Cloudflare
+## First deploy to Cloudflare
 
 1. Authenticate Wrangler using the user's Cloudflare account.
 2. Provision only the bindings declared by the generated project.
-3. Set required secrets through Wrangler or the Cloudflare dashboard; never commit secret values.
-4. Run the generated project's documented deploy command.
-5. Open the deployment URL and verify every surface the project claims to expose. Do not claim Admin, API, MCP, or WebMCP works until its real route responds as expected.
+3. Run the generated project's documented deploy command.
+4. Record its HTTPS Worker URL and verify the public site. Admin remains unavailable until Auth is configured below.
 
 Use the generated project's commands after reviewing its configuration:
 
@@ -197,4 +199,38 @@ Use the generated project's commands after reviewing its configuration:
 pnpm exec wrangler login
 pnpm deploy
 \`\`\`
+
+## Enable your Admin with GitHub
+
+The default Auth mode is self-managed GitHub OAuth.
+
+1. In GitHub, open **Settings → Developer settings → OAuth Apps → New OAuth App**.
+2. Set **Homepage URL** to your Worker URL, for example \`https://your-site.workers.dev\`.
+3. Set **Authorization callback URL** to \`https://your-site.workers.dev/api/auth/callback/github\`. Leave Device Flow disabled.
+4. Put these non-secret values in the generated project's \`wrangler.toml\` \`[vars]\` section:
+
+\`\`\`toml
+PUBLIC_ORIGIN = "https://your-site.workers.dev"
+MANTLE_AUTH_MODE = "self-managed"
+GITHUB_CLIENT_ID = "<github-oauth-client-id>"
+ADMIN_GITHUB_LOGIN = "<your-github-login>"
+\`\`\`
+
+\`ADMIN_GITHUB_LOGIN\` is the GitHub username allowed to become the first owner when no owner exists yet.
+
+5. Add the two secret values through Cloudflare's Worker settings, or from the project directory:
+
+\`\`\`sh
+read -rsp "GitHub OAuth client secret: " MANTLE_GITHUB_CLIENT_SECRET && printf '\\n'
+printf '%s' "$MANTLE_GITHUB_CLIENT_SECRET" | pnpm exec wrangler secret put GITHUB_CLIENT_SECRET
+openssl rand -hex 32 | pnpm exec wrangler secret put BETTER_AUTH_SECRET
+unset MANTLE_GITHUB_CLIENT_SECRET
+\`\`\`
+
+Keep \`BETTER_AUTH_SECRET\` stable; rotating it signs out existing sessions. Never paste either secret into source files, Git, or agent chat.
+
+6. Commit and push the non-secret \`wrangler.toml\` changes, then redeploy with \`pnpm deploy\`.
+7. Open \`https://your-site.workers.dev/admin/sign-in\` and sign in with the GitHub account named by \`ADMIN_GITHUB_LOGIN\`. Verify the Admin and every API, MCP, or WebMCP surface the project claims to expose.
+
+If you add a custom domain later, update \`PUBLIC_ORIGIN\` and the GitHub OAuth callback URL together, then redeploy.
 `

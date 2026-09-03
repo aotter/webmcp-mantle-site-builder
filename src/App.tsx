@@ -1,6 +1,6 @@
 import { bindWebMcp, type WebMcpBinding } from '@aotter/mantle-web/webmcp'
 import type { Operation } from 'fast-json-patch'
-import { Bot, Braces, Check, ChevronDown, Copy, Download, FileJson2, Monitor, Moon, Plus, Smartphone, Sparkles, Sun, Trash2, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Bot, Braces, Check, ChevronDown, Cloud, Copy, Download, ExternalLink, FileJson2, GitBranch, Monitor, Moon, Plus, Rocket, Smartphone, Sparkles, Sun, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { isTrustedAdminSource, readHostApiRequest } from '@/lib/admin-bridge'
 import {
@@ -56,15 +65,23 @@ import {
 import { createPreviewDeployment, previewDeploymentDiagnostics, type PreviewDeployment } from '@/lib/preview-deployment'
 
 const promptPresets = [
-  { name: 'intake', label: 'Intake', brief: 'Build a public intake flow that collects structured requests and gives staff a review queue.' },
-  { name: 'reservation', label: 'Reservation', brief: 'Build a reservation service with public booking, a member-friendly status view, and a staff queue.' },
-  { name: 'transaction', label: 'Transaction', brief: 'Build a small catalog and ordering service with public discovery, checkout, and staff order management.' },
-  { name: 'procurement', label: 'Procurement', brief: 'Build a procurement workflow where members submit purchase requisitions and staff review them.' },
-  { name: 'blank', label: 'Blank', brief: 'Interview me to learn the actors, data, operations, permissions, and entry points this service needs.' },
-] as const satisfies readonly { name: PresetName | 'blank'; label: string; brief: string }[]
+  { name: 'intake', label: 'Intake', description: 'Request forms, lead capture, applications, support intake, and staff review queues.', starter: 'Public request intake, typed validation, HTTP/MCP entry points, and a staff review queue.', brief: 'Build a public intake flow that collects structured requests and gives staff a review queue.' },
+  { name: 'reservation', label: 'Reservation', description: 'Appointments, classes, room or equipment booking, availability, and staff scheduling.', starter: 'Public reservation intake, typed validation, HTTP/MCP entry points, and a staff review queue.', brief: 'Build a reservation service with public booking, a member-friendly status view, and a staff queue.' },
+  { name: 'transaction', label: 'Transaction', description: 'Catalogs, ecommerce, checkout, order operations, and agent-assisted customer service.', starter: 'A public catalog, HTTP/MCP ordering, and a staff order queue.', brief: 'Build a small catalog and ordering service with public discovery, checkout, and staff order management.' },
+  { name: 'procurement', label: 'Procurement', description: 'Purchase requests, approval chains, vendor workflows, and internal order tracking.', starter: 'Member submission and status, staff approval tools, and role-aware access.', brief: 'Build a procurement workflow where members submit purchase requisitions and staff review them.' },
+  { name: 'blank', label: 'Blank', description: 'Custom workflows that do not fit a preset. Your agent will interview you and design the business logic.', starter: 'An empty validated Manifest ready for a guided requirements interview.', brief: 'Interview me to learn the actors, data, operations, permissions, and entry points this service needs.' },
+] as const satisfies readonly { name: PresetName | 'blank'; label: string; description: string; starter: string; brief: string }[]
 
 type PromptType = (typeof promptPresets)[number]['name']
 type PreviewViewport = 'desktop' | 'mobile'
+type ShipStep = 'handoff' | 'github' | 'cloudflare'
+
+const cloudflareSteps = [
+  { title: 'Create application', description: 'Open Workers & Pages and choose Create application.', image: '/cloudflare-guide/create.svg' },
+  { title: 'Connect GitHub', description: 'Choose Continue with GitHub.', image: '/cloudflare-guide/github.svg' },
+  { title: 'Select repository', description: 'Select the runnable repository your coding agent pushed.', image: '/cloudflare-guide/repo.svg' },
+  { title: 'Deploy', description: 'Keep the project name, deploy, then open the site.', image: '/cloudflare-guide/deploy.svg' },
+] as const
 
 export default function App() {
   const [currentProject, setCurrentProject] = useState(createProjectRecord)
@@ -73,10 +90,12 @@ export default function App() {
   const [projectsReady, setProjectsReady] = useState(false)
   const [storageError, setStorageError] = useState('')
   const [exportError, setExportError] = useState('')
+  const [shipOpen, setShipOpen] = useState(false)
+  const [shipStep, setShipStep] = useState<ShipStep>('handoff')
+  const [shipCopied, setShipCopied] = useState<ShipStep | null>(null)
   const [deleteCandidate, setDeleteCandidate] = useState<ProjectRecord | null>(null)
   const [webMcpSupported, setWebMcpSupported] = useState<boolean | null>(null)
   const [promptType, setPromptType] = useState<PromptType>('intake')
-  const [brief, setBrief] = useState<string>(promptPresets[0].brief)
   const [promptCopied, setPromptCopied] = useState(false)
   const [darkMode, setDarkMode] = useState(() => document.documentElement.classList.contains('dark'))
   const [previewViewport, setPreviewViewport] = useState<PreviewViewport>(() => new URLSearchParams(location.search).get('viewport') === 'mobile' ? 'mobile' : 'desktop')
@@ -87,6 +106,7 @@ export default function App() {
   const adminIframeRef = useRef<HTMLIFrameElement>(null)
   const buildDialogRef = useRef<HTMLDialogElement>(null)
   const previewDeploymentRef = useRef<PreviewDeployment | null>(null)
+  const storyScrollerRef = useRef<HTMLDivElement>(null)
   const [serializeMutation] = useState(createMutationQueue)
   const closeMenus = useCallback(() => {
     document.querySelectorAll<HTMLDetailsElement>('[data-toolbar-menu][open]').forEach((menu) => { menu.open = false })
@@ -404,10 +424,21 @@ export default function App() {
 
   const copyStartingPrompt = async () => {
     try {
-      await navigator.clipboard.writeText(startingPrompt(promptType, brief))
+      const preset = promptPresets.find(({ name }) => name === promptType)
+      if (!preset) return
+      await navigator.clipboard.writeText(startingPrompt(preset.name, preset.brief))
       setPromptCopied(true)
     } catch {
       setPromptCopied(false)
+    }
+  }
+
+  const copyShipInstructions = async (step: ShipStep, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setShipCopied(step)
+    } catch {
+      setShipCopied(null)
     }
   }
 
@@ -431,7 +462,6 @@ export default function App() {
       link.remove()
       setTimeout(() => URL.revokeObjectURL(url), 1_000)
       setExportError('')
-      closeMenus()
     } catch (error) {
       setExportError(messageOf(error))
     }
@@ -439,6 +469,50 @@ export default function App() {
 
   const summary = projectStateSummary(project)
   const hasProject = Object.values(summary.atoms).some((names) => names.length > 0)
+
+  useEffect(() => {
+    const scroller = storyScrollerRef.current
+    if (hasProject || !scroller) return
+    let locked = false
+    let unlockTimer = 0
+    const unlockAfterGesture = () => {
+      window.clearTimeout(unlockTimer)
+      unlockTimer = window.setTimeout(() => { locked = false }, 450)
+    }
+    const onWheel = (event: WheelEvent) => {
+      if (Math.abs(event.deltaY) < 8 || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+      if (locked) {
+        event.preventDefault()
+        unlockAfterGesture()
+        return
+      }
+      const sections = Array.from(scroller.querySelectorAll<HTMLElement>('.story-section'))
+      const currentIndex = sections.reduce((nearest, section, index) => (
+        Math.abs(section.offsetTop - scroller.scrollTop) < Math.abs(sections[nearest].offsetTop - scroller.scrollTop) ? index : nearest
+      ), 0)
+      const nextIndex = Math.max(0, Math.min(sections.length - 1, currentIndex + Math.sign(event.deltaY)))
+      if (nextIndex === currentIndex) return
+      event.preventDefault()
+      locked = true
+      scroller.scrollTo({
+        top: sections[nextIndex].offsetTop,
+        behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      })
+      unlockAfterGesture()
+    }
+    scroller.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      window.clearTimeout(unlockTimer)
+      scroller.removeEventListener('wheel', onWheel)
+    }
+  }, [hasProject])
+
+  const archiveName = projectArchiveName(currentProject.name, currentProject.id)
+  const shipInstructions = {
+    handoff: `Use the attached ${archiveName} handoff. Read HANDOFF.md first, follow the pinned Mantle develop skill, bootstrap the version-matched Blank project, replace manifests/site.yaml, then implement only the consumer-owned gaps. Run only verification scripts declared by package.json. Follow DEPLOY.md for the default self-managed GitHub Auth setup, and never put secrets in source or chat.`,
+    github: `After the runnable ${currentProject.name} project passes its checks, ask me to choose the GitHub owner, repository name, and visibility. Create that repository, commit the generated project without secrets, push it, and report the repository URL. Do not deploy yet.`,
+    cloudflare: `Deploy the runnable GitHub repository to Cloudflare and record its HTTPS URL. Then create a GitHub OAuth App whose callback is <worker-url>/api/auth/callback/github. Set PUBLIC_ORIGIN, MANTLE_AUTH_MODE=self-managed, GITHUB_CLIENT_ID, and ADMIN_GITHUB_LOGIN as Worker variables; set GITHUB_CLIENT_SECRET and a stable BETTER_AUTH_SECRET as Worker secrets. Redeploy, sign in at <worker-url>/admin/sign-in with the configured GitHub account, and verify the site, Admin, API, MCP, and WebMCP surfaces. Follow DEPLOY.md for exact steps; never commit or paste secrets into chat.`,
+  } satisfies Record<ShipStep, string>
 
   return (
     <div className="relative h-svh overflow-hidden bg-background text-foreground">
@@ -472,21 +546,31 @@ export default function App() {
             <Button variant="outline" size="sm" className="mt-2 w-full" disabled={!projectsReady} onClick={() => void createNewProject()}>
               <Plus /> New project
             </Button>
-            {hasProject && <div className="mt-2 border-t pt-2">
-              <p className="truncate px-1 text-xs font-medium">{projectArchiveName(currentProject.name, currentProject.id)}</p>
-              <p className="px-1 text-[11px] leading-4 text-muted-foreground">{currentProject.name} · Mantle {mantleVersion}</p>
-              <p className="px-1 text-[11px] leading-4 text-muted-foreground" title={`${runtimeSourceRevision} / ${adminSourceRevision}`}>Sources {runtimeSourceRevision.slice(0, 8)} / {adminSourceRevision.slice(0, 8)}</p>
-              <p className="px-1 text-[11px] leading-4 text-muted-foreground">Coding-agent handoff; not a ready-to-run app.</p>
-              <Button variant="outline" size="sm" className="mt-2 w-full" onClick={downloadProject}>
-                <Download /> Download project
-              </Button>
-            </div>}
             {storageError && <p className="mt-2 px-1 text-xs text-destructive">Autosave unavailable: {storageError}</p>}
-            {exportError && <p className="mt-2 px-1 text-xs text-destructive">Download failed: {exportError}</p>}
           </div>
         </details>
 
         <div className="ml-auto flex items-center gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!hasProject}
+            onClick={() => {
+              setShipStep('handoff')
+              setShipCopied(null)
+              setExportError('')
+              setShipOpen(true)
+            }}
+            aria-label="Deploy to Cloudflare"
+            title={hasProject ? 'Deploy to Cloudflare' : 'Add Manifest resources before deploying'}
+          >
+            <Cloud /> Deploy to Cloudflare
+          </Button>
+          <Button asChild variant="ghost" size="icon-sm">
+            <a href="https://github.com/aotter/mantle" target="_blank" rel="noreferrer" aria-label="Open Mantle on GitHub" title="Open Mantle on GitHub">
+              <img src="/github-mark.svg" alt="" className="size-4 dark:invert" />
+            </a>
+          </Button>
           <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label={darkMode ? 'Use light theme' : 'Use dark theme'} title={darkMode ? 'Use light theme' : 'Use dark theme'}>
             {darkMode ? <Sun /> : <Moon />}
           </Button>
@@ -531,49 +615,100 @@ export default function App() {
             </div>
           </div>}
           {!hasProject && (
-            <div className="absolute inset-0 z-10 grid place-items-center p-5">
-              <section className="empty-project-glass w-full max-w-2xl rounded-2xl p-5 sm:p-7">
-                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Sparkles className="size-4" /> Agent-built · Agent-operated</div>
-                <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">Describe the workflow. Ship the service.</h1>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground"><a href="https://github.com/aotter/mantle" target="_blank" rel="noreferrer" className="font-medium text-foreground underline-offset-4 hover:underline">Mantle</a> turns your business rules into agent-ready services.</p>
-                <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Service outputs">
-                  <Badge variant="secondary">Cloudflare-ready</Badge>
-                  <Badge variant="secondary">API</Badge>
-                  <Badge variant="secondary">MCP</Badge>
-                  <Badge variant="secondary">WebMCP</Badge>
+            <div ref={storyScrollerRef} className="story-scroller absolute inset-0 z-10 overflow-y-auto">
+              <section className="story-section relative grid place-items-center px-5 py-10" aria-labelledby="builder-hero-title">
+                <div className="story-card empty-project-glass w-full max-w-3xl rounded-2xl p-6 sm:p-9">
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Sparkles className="size-4" /> Agent-built · Agent-operated</div>
+                  <h1 id="builder-hero-title" className="mt-3 text-3xl font-semibold tracking-tight sm:text-5xl">Describe the workflow. Ship the service.</h1>
+                  <p className="mt-4 max-w-2xl text-base leading-7 text-muted-foreground"><a href="https://github.com/aotter/mantle" target="_blank" rel="noreferrer" className="font-medium text-foreground underline-offset-4 hover:underline">Mantle</a> turns your business rules into agent-ready services.</p>
+                  <div className="mt-5 flex flex-wrap gap-2" aria-label="Service outputs">
+                    <Badge variant="secondary">Cloudflare-ready</Badge>
+                    <Badge variant="secondary">API</Badge>
+                    <Badge variant="secondary">MCP</Badge>
+                    <Badge variant="secondary">WebMCP</Badge>
+                  </div>
                 </div>
-                <Tabs
-                  value={promptType}
-                  onValueChange={(value) => {
-                    const preset = promptPresets.find(({ name }) => name === value)
-                    if (!preset) return
-                    setPromptType(preset.name)
-                    setBrief(preset.brief)
-                    setPromptCopied(false)
-                  }}
-                  className="mt-5 gap-0 rounded-xl border bg-background/65 shadow-inner backdrop-blur-md"
-                >
-                  <TabsList className="h-auto w-full overflow-x-auto rounded-none bg-transparent p-1" aria-label="Starting prompt type">
+                <a href="#contract" className="absolute bottom-5 left-1/2 inline-flex -translate-x-1/2 flex-col items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:text-foreground" aria-label="Scroll to learn how Mantle works">
+                  Scroll to continue
+                  <span className="animate-bounce motion-reduce:animate-none"><ArrowRight className="size-4 rotate-90" /></span>
+                </a>
+              </section>
+
+              <section id="contract" className="story-section grid place-items-center px-5 py-10" aria-labelledby="contract-title">
+                <div className="story-card empty-project-glass w-full max-w-3xl rounded-2xl p-6 sm:p-9">
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Braces className="size-4" /> Config as code</div>
+                  <h2 id="contract-title" className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Four atoms from which your world takes shape.</h2>
+                  <p className="mt-4 max-w-2xl text-base leading-7 text-muted-foreground">Your agent writes Schema, View, Procedure, and Trigger in one YAML Manifest. Mantle validates the config and carries the runtime complexity.</p>
+                  <div className="mt-5 flex flex-wrap gap-2" aria-label="Mantle atoms">
+                    <Badge variant="secondary">Schema</Badge>
+                    <Badge variant="secondary">View</Badge>
+                    <Badge variant="secondary">Procedure</Badge>
+                    <Badge variant="secondary">Trigger</Badge>
+                  </div>
+                </div>
+              </section>
+
+              <section className="story-section grid place-items-center px-5 py-10" aria-labelledby="operations-title">
+                <div className="story-card empty-project-glass w-full max-w-3xl rounded-2xl p-6 sm:p-9">
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Bot className="size-4" /> Connected operations</div>
+                  <h2 id="operations-title" className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Create the tools your agents are missing.</h2>
+                  <p className="mt-4 max-w-2xl text-base leading-7 text-muted-foreground">One Manifest immediately produces MCP and WebMCP interfaces, ready for your existing agent workflows. Admin gives operations one place to manage customers, orders, and queues.</p>
+                  <div className="mt-5 flex flex-wrap gap-2" aria-label="Operational interfaces">
+                    <Badge variant="secondary">MCP</Badge>
+                    <Badge variant="secondary">WebMCP</Badge>
+                    <Badge variant="secondary">Admin</Badge>
+                  </div>
+                </div>
+              </section>
+
+              <section className="story-section grid place-items-center px-5 py-10" aria-labelledby="handoff-title">
+                <div className="story-card empty-project-glass w-full max-w-3xl rounded-2xl p-6 sm:p-9">
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Rocket className="size-4" /> Agent handoff</div>
+                  <h2 id="handoff-title" className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">From working service to finished product.</h2>
+                  <p className="mt-4 max-w-2xl text-base leading-7 text-muted-foreground">Download the handoff. Your coding agent adds the frontend, authentication, and Cloudflare deployment.</p>
+                </div>
+              </section>
+
+              <section id="starting-point" className="story-section grid place-items-center px-5 py-10" aria-labelledby="starting-point-title">
+                <div className="story-card empty-project-glass w-full max-w-3xl rounded-2xl p-5 sm:p-7">
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Sparkles className="size-4" /> Try it now</div>
+                  <h2 id="starting-point-title" className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Choose an application shape.</h2>
+                  <p className="mt-3 text-sm leading-6 text-muted-foreground">Start from the closest backend workflow. Your agent will interview you, adapt the Manifest, and ask before applying changes.</p>
+                  <Tabs
+                    value={promptType}
+                    onValueChange={(value) => {
+                      const preset = promptPresets.find(({ name }) => name === value)
+                      if (!preset) return
+                      setPromptType(preset.name)
+                      setPromptCopied(false)
+                    }}
+                    className="mt-5 gap-0 rounded-xl border bg-background/65 shadow-inner backdrop-blur-md"
+                  >
+                    <TabsList className="h-auto w-full overflow-x-auto rounded-none bg-transparent p-1" aria-label="Starting prompt type">
+                      {promptPresets.map((preset) => (
+                        <TabsTrigger key={preset.name} value={preset.name} className="prompt-tab min-w-fit px-2.5 py-2 text-xs">
+                          {preset.label}
+                        </TabsTrigger>
+                      ))}
+                    </TabsList>
                     {promptPresets.map((preset) => (
-                      <TabsTrigger key={preset.name} value={preset.name} className="prompt-tab min-w-fit px-2.5 py-2 text-xs">
-                        {preset.label}
-                      </TabsTrigger>
+                      <TabsContent key={preset.name} value={preset.name} className="m-0">
+                        <div className="p-3">
+                          <p className="text-sm font-medium leading-5 text-foreground">{preset.description}</p>
+                          <p className="mt-1 text-xs leading-5 text-muted-foreground">Starts with {preset.starter.charAt(0).toLowerCase() + preset.starter.slice(1)}</p>
+                          <div className="mt-4 flex flex-wrap items-center gap-2" aria-label="Use this starting prompt">
+                            <Badge variant="outline" className="size-6 justify-center rounded-full p-0">1</Badge>
+                            <Button size="sm" onClick={copyStartingPrompt}>
+                              {promptCopied ? <Check /> : <Copy />}{promptCopied ? 'Copied' : 'Copy prompt'}
+                            </Button>
+                            <ArrowRight className="size-4 text-muted-foreground" aria-hidden="true" />
+                            <Badge variant="outline" className="size-6 justify-center rounded-full p-0">2</Badge>
+                            <span className="text-sm text-muted-foreground">Paste into your agent chat</span>
+                          </div>
+                        </div>
+                      </TabsContent>
                     ))}
-                  </TabsList>
-                  {promptPresets.map((preset) => (
-                    <TabsContent key={preset.name} value={preset.name} className="m-0">
-                      <textarea
-                        value={promptType === preset.name ? brief : preset.brief}
-                        onChange={(event) => { setBrief(event.target.value); setPromptCopied(false) }}
-                        aria-label={`${preset.label} service brief`}
-                        rows={4}
-                        className="block w-full resize-y border-0 bg-transparent p-3 text-sm leading-6 outline-none"
-                      />
-                    </TabsContent>
-                  ))}
-                </Tabs>
-                <div className="mt-3 flex flex-wrap items-center gap-3">
-                  <Button onClick={copyStartingPrompt} disabled={!brief.trim()}>{promptCopied ? <Check /> : <Copy />}{promptCopied ? 'Copied for agent' : 'Copy agent prompt'}</Button>
+                  </Tabs>
                 </div>
               </section>
             </div>
@@ -603,6 +738,103 @@ export default function App() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        open={shipOpen}
+        onOpenChange={setShipOpen}
+      >
+        <DialogContent className="grid max-h-[calc(100svh-2rem)] w-[calc(100%-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-3xl">
+          <DialogHeader className="p-5 pb-4 pr-12">
+            <DialogTitle className="flex items-center gap-2 text-lg"><Rocket className="size-5 text-primary" /> Ship {currentProject.name}</DialogTitle>
+            <DialogDescription>Hand the Mantle contract to a coding agent, push the runnable project, then deploy it.</DialogDescription>
+          </DialogHeader>
+
+          <Tabs value={shipStep} onValueChange={(value) => setShipStep(value as ShipStep)} className="min-h-0 gap-0 overflow-hidden border-y">
+            <TabsList className="mx-5 mt-4 grid w-auto grid-cols-3 group-data-horizontal/tabs:h-11" aria-label="Ship workflow">
+              <TabsTrigger value="handoff" className="gap-1 py-2 text-xs sm:text-sm"><span className="text-muted-foreground">1</span> Handoff</TabsTrigger>
+              <TabsTrigger value="github" className="gap-1 py-2 text-xs sm:text-sm"><span className="text-muted-foreground">2</span> GitHub</TabsTrigger>
+              <TabsTrigger value="cloudflare" className="gap-1 py-2 text-xs sm:text-sm"><span className="text-muted-foreground">3</span> Cloudflare</TabsTrigger>
+            </TabsList>
+
+            <div className="min-h-0 overflow-y-auto p-5">
+              <TabsContent value="handoff" className="m-0 space-y-4">
+                <div>
+                  <h2 className="font-semibold">Hand off to a coding agent</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">The ZIP carries the complete Manifest and pinned instructions. It is not a ready-to-run application.</p>
+                </div>
+                <div className="rounded-xl border bg-muted/40 p-4">
+                  <div className="flex items-start gap-3">
+                    <FileJson2 className="mt-0.5 size-5 shrink-0 text-primary" />
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">{archiveName}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{currentProject.name} · Mantle {mantleVersion}</p>
+                      <p className="text-xs text-muted-foreground" title={`${runtimeSourceRevision} / ${adminSourceRevision}`}>Sources {runtimeSourceRevision.slice(0, 8)} / {adminSourceRevision.slice(0, 8)}</p>
+                    </div>
+                  </div>
+                </div>
+                <ol className="grid gap-2 text-sm text-muted-foreground">
+                  <li><strong className="text-foreground">1.</strong> Download the handoff ZIP.</li>
+                  <li><strong className="text-foreground">2.</strong> Attach it to your coding agent and paste the prompt.</li>
+                  <li><strong className="text-foreground">3.</strong> Let the agent materialize and verify the project.</li>
+                </ol>
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={downloadProject}><Download /> Download handoff</Button>
+                  <Button variant="outline" onClick={() => void copyShipInstructions('handoff', shipInstructions.handoff)}>{shipCopied === 'handoff' ? <Check /> : <Copy />}{shipCopied === 'handoff' ? 'Copied' : 'Copy agent prompt'}</Button>
+                </div>
+                {exportError && <p className="text-sm text-destructive" role="alert">Download failed: {exportError}</p>}
+              </TabsContent>
+
+              <TabsContent value="github" className="m-0 space-y-4">
+                <div>
+                  <h2 className="flex items-center gap-2 font-semibold"><GitBranch className="size-5" /> Push the runnable project</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">Do this after the coding agent has materialized and verified the project.</p>
+                </div>
+                <ol className="grid gap-3">
+                  <li className="rounded-xl border p-4 text-sm"><strong>1. Choose ownership</strong><p className="mt-1 text-muted-foreground">Select the GitHub owner, repository name, and private or public visibility.</p></li>
+                  <li className="rounded-xl border p-4 text-sm"><strong>2. Push the application</strong><p className="mt-1 text-muted-foreground">Commit the runnable generated project—not the handoff ZIP—and keep secrets out of Git.</p></li>
+                  <li className="rounded-xl border p-4 text-sm"><strong>3. Keep the repository URL</strong><p className="mt-1 text-muted-foreground">Cloudflare will connect to this repository in the next step.</p></li>
+                </ol>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={() => void copyShipInstructions('github', shipInstructions.github)}>{shipCopied === 'github' ? <Check /> : <Copy />}{shipCopied === 'github' ? 'Copied' : 'Copy GitHub instructions'}</Button>
+                  <Button asChild variant="outline"><a href="https://github.com/new" target="_blank" rel="noreferrer"><ExternalLink /> Open GitHub</a></Button>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="cloudflare" className="m-0 space-y-4">
+                <div>
+                  <h2 className="flex items-center gap-2 font-semibold"><Cloud className="size-5" /> Deploy from GitHub</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">Connect the runnable repository to Cloudflare Workers & Pages.</p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {cloudflareSteps.map((step, index) => (
+                    <figure key={step.title} className="overflow-hidden rounded-xl border bg-muted/30">
+                      <div className="grid min-h-24 place-items-center border-b bg-white p-2"><img src={step.image} alt="" className="max-h-44 w-full object-contain" loading="lazy" /></div>
+                      <figcaption className="p-3 text-sm"><strong>{index + 1}. {step.title}</strong><p className="mt-1 text-xs leading-5 text-muted-foreground">{step.description}</p></figcaption>
+                    </figure>
+                  ))}
+                </div>
+                <div className="rounded-xl border bg-muted/40 p-4 text-sm">
+                  <strong>Finish Admin access</strong>
+                  <p className="mt-1 leading-5 text-muted-foreground">After deploying, follow DEPLOY.md to create a GitHub OAuth App, add the Worker variables and secrets, then sign in at <code>/admin/sign-in</code> as the configured owner.</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={() => void copyShipInstructions('cloudflare', shipInstructions.cloudflare)}>{shipCopied === 'cloudflare' ? <Check /> : <Copy />}{shipCopied === 'cloudflare' ? 'Copied' : 'Copy deploy instructions'}</Button>
+                  <Button asChild variant="outline"><a href="https://dash.cloudflare.com/" target="_blank" rel="noreferrer"><ExternalLink /> Open Cloudflare</a></Button>
+                </div>
+              </TabsContent>
+            </div>
+          </Tabs>
+
+          <DialogFooter className="m-0 flex-row justify-between rounded-none px-5 py-4">
+            <Button variant="outline" disabled={shipStep === 'handoff'} onClick={() => setShipStep(shipStep === 'cloudflare' ? 'github' : 'handoff')}><ArrowLeft /> Back</Button>
+            {shipStep !== 'cloudflare' ? (
+              <Button onClick={() => setShipStep(shipStep === 'handoff' ? 'github' : 'cloudflare')}>Next <ArrowRight /></Button>
+            ) : (
+              <DialogClose asChild><Button>Done</Button></DialogClose>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <dialog
         ref={buildDialogRef}
