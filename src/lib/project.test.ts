@@ -136,11 +136,15 @@ describe('Builder authoring contract', () => {
       expect(prompt).toContain('builder_get_started')
       expect(prompt).toContain('builder_apply_preset')
       expect(prompt).toContain('projectId')
-      expect(prompt).toContain('revision')
+      expect(prompt).toContain('baseRevision: revision')
+      expect(prompt).toContain('projectName')
+      expect(prompt).toContain('wait for my confirmation')
       expect(prompt).not.toMatch(/starter/i)
     }
     const blank = startingPrompt('blank', 'Build it.')
     expect(blank).toContain('builder_apply_manifest_patch')
+    expect(blank).toContain('{ projectId, baseRevision: revision, projectName, patch }')
+    expect(blank).toContain('wait for my confirmation')
     expect(blank).not.toContain('builder_apply_preset')
   })
 

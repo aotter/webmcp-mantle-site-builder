@@ -65,12 +65,12 @@ import {
 import { createPreviewDeployment, previewDeploymentDiagnostics, type PreviewDeployment } from '@/lib/preview-deployment'
 
 const promptPresets = [
-  { name: 'intake', label: 'Intake', brief: 'Build a public intake flow that collects structured requests and gives staff a review queue.' },
-  { name: 'reservation', label: 'Reservation', brief: 'Build a reservation service with public booking, a member-friendly status view, and a staff queue.' },
-  { name: 'transaction', label: 'Transaction', brief: 'Build a small catalog and ordering service with public discovery, checkout, and staff order management.' },
-  { name: 'procurement', label: 'Procurement', brief: 'Build a procurement workflow where members submit purchase requisitions and staff review them.' },
-  { name: 'blank', label: 'Blank', brief: 'Interview me to learn the actors, data, operations, permissions, and entry points this service needs.' },
-] as const satisfies readonly { name: PresetName | 'blank'; label: string; brief: string }[]
+  { name: 'intake', label: 'Intake', description: 'Request forms, lead capture, applications, support intake, and staff review queues.', brief: 'Build a public intake flow that collects structured requests and gives staff a review queue.' },
+  { name: 'reservation', label: 'Reservation', description: 'Appointments, classes, room or equipment booking, availability, and staff scheduling.', brief: 'Build a reservation service with public booking, a member-friendly status view, and a staff queue.' },
+  { name: 'transaction', label: 'Transaction', description: 'Catalogs, ecommerce, checkout, order operations, and agent-assisted customer service.', brief: 'Build a small catalog and ordering service with public discovery, checkout, and staff order management.' },
+  { name: 'procurement', label: 'Procurement', description: 'Purchase requests, approval chains, vendor workflows, and internal order tracking.', brief: 'Build a procurement workflow where members submit purchase requisitions and staff review them.' },
+  { name: 'blank', label: 'Blank', description: 'Custom workflows that do not fit a preset. Your agent will interview you and design the business logic.', brief: 'Interview me to learn the actors, data, operations, permissions, and entry points this service needs.' },
+] as const satisfies readonly { name: PresetName | 'blank'; label: string; description: string; brief: string }[]
 
 type PromptType = (typeof promptPresets)[number]['name']
 type PreviewViewport = 'desktop' | 'mobile'
@@ -96,7 +96,6 @@ export default function App() {
   const [deleteCandidate, setDeleteCandidate] = useState<ProjectRecord | null>(null)
   const [webMcpSupported, setWebMcpSupported] = useState<boolean | null>(null)
   const [promptType, setPromptType] = useState<PromptType>('intake')
-  const [brief, setBrief] = useState<string>(promptPresets[0].brief)
   const [promptCopied, setPromptCopied] = useState(false)
   const [darkMode, setDarkMode] = useState(() => document.documentElement.classList.contains('dark'))
   const [previewViewport, setPreviewViewport] = useState<PreviewViewport>(() => new URLSearchParams(location.search).get('viewport') === 'mobile' ? 'mobile' : 'desktop')
@@ -424,7 +423,9 @@ export default function App() {
 
   const copyStartingPrompt = async () => {
     try {
-      await navigator.clipboard.writeText(startingPrompt(promptType, brief))
+      const preset = promptPresets.find(({ name }) => name === promptType)
+      if (!preset) return
+      await navigator.clipboard.writeText(startingPrompt(preset.name, preset.brief))
       setPromptCopied(true)
     } catch {
       setPromptCopied(false)
@@ -587,7 +588,6 @@ export default function App() {
                     const preset = promptPresets.find(({ name }) => name === value)
                     if (!preset) return
                     setPromptType(preset.name)
-                    setBrief(preset.brief)
                     setPromptCopied(false)
                   }}
                   className="mt-5 gap-0 rounded-xl border bg-background/65 shadow-inner backdrop-blur-md"
@@ -601,19 +601,21 @@ export default function App() {
                   </TabsList>
                   {promptPresets.map((preset) => (
                     <TabsContent key={preset.name} value={preset.name} className="m-0">
-                      <textarea
-                        value={promptType === preset.name ? brief : preset.brief}
-                        onChange={(event) => { setBrief(event.target.value); setPromptCopied(false) }}
-                        aria-label={`${preset.label} service brief`}
-                        rows={4}
-                        className="block w-full resize-y border-0 bg-transparent p-3 text-sm leading-6 outline-none"
-                      />
+                      <div className="p-3">
+                        <p className="text-sm font-medium leading-5 text-foreground">{preset.description}</p>
+                        <div className="mt-3 flex flex-wrap items-center gap-2" aria-label="Use this starting prompt">
+                          <Badge variant="outline" className="size-6 justify-center rounded-full p-0">1</Badge>
+                          <Button size="sm" onClick={copyStartingPrompt}>
+                            {promptCopied ? <Check /> : <Copy />}{promptCopied ? 'Copied' : 'Copy prompt'}
+                          </Button>
+                          <ArrowRight className="size-4 text-muted-foreground" aria-hidden="true" />
+                          <Badge variant="outline" className="size-6 justify-center rounded-full p-0">2</Badge>
+                          <span className="text-sm text-muted-foreground">Paste into your agent chat</span>
+                        </div>
+                      </div>
                     </TabsContent>
                   ))}
                 </Tabs>
-                <div className="mt-3 flex flex-wrap items-center gap-3">
-                  <Button onClick={copyStartingPrompt} disabled={!brief.trim()}>{promptCopied ? <Check /> : <Copy />}{promptCopied ? 'Copied for agent' : 'Copy agent prompt'}</Button>
-                </div>
               </section>
             </div>
           )}
@@ -647,14 +649,14 @@ export default function App() {
         open={shipOpen}
         onOpenChange={setShipOpen}
       >
-        <DialogContent className="grid max-h-[calc(100svh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-3xl">
+        <DialogContent className="grid max-h-[calc(100svh-2rem)] w-[calc(100%-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-3xl">
           <DialogHeader className="p-5 pb-4 pr-12">
             <DialogTitle className="flex items-center gap-2 text-lg"><Rocket className="size-5 text-primary" /> Ship {currentProject.name}</DialogTitle>
             <DialogDescription>Hand the Mantle contract to a coding agent, push the runnable project, then deploy it.</DialogDescription>
           </DialogHeader>
 
           <Tabs value={shipStep} onValueChange={(value) => setShipStep(value as ShipStep)} className="min-h-0 gap-0 overflow-hidden border-y">
-            <TabsList className="mx-5 mt-4 grid h-auto w-auto grid-cols-3" aria-label="Ship workflow">
+            <TabsList className="mx-5 mt-4 grid w-auto grid-cols-3 group-data-horizontal/tabs:h-11" aria-label="Ship workflow">
               <TabsTrigger value="handoff" className="gap-1 py-2 text-xs sm:text-sm"><span className="text-muted-foreground">1</span> Handoff</TabsTrigger>
               <TabsTrigger value="github" className="gap-1 py-2 text-xs sm:text-sm"><span className="text-muted-foreground">2</span> GitHub</TabsTrigger>
               <TabsTrigger value="cloudflare" className="gap-1 py-2 text-xs sm:text-sm"><span className="text-muted-foreground">3</span> Cloudflare</TabsTrigger>
@@ -679,7 +681,7 @@ export default function App() {
                 <ol className="grid gap-2 text-sm text-muted-foreground">
                   <li><strong className="text-foreground">1.</strong> Download the handoff ZIP.</li>
                   <li><strong className="text-foreground">2.</strong> Attach it to your coding agent and paste the prompt.</li>
-                  <li><strong className="text-foreground">3.</strong> Let the agent materialize and verify a Mantle Blank project.</li>
+                  <li><strong className="text-foreground">3.</strong> Let the agent materialize and verify the project.</li>
                 </ol>
                 <div className="flex flex-wrap gap-2">
                   <Button onClick={downloadProject}><Download /> Download handoff</Button>
@@ -691,7 +693,7 @@ export default function App() {
               <TabsContent value="github" className="m-0 space-y-4">
                 <div>
                   <h2 className="flex items-center gap-2 font-semibold"><GitBranch className="size-5" /> Push the runnable project</h2>
-                  <p className="mt-1 text-sm text-muted-foreground">Do this after the coding agent has materialized the Blank project and all checks pass.</p>
+                  <p className="mt-1 text-sm text-muted-foreground">Do this after the coding agent has materialized and verified the project.</p>
                 </div>
                 <ol className="grid gap-3">
                   <li className="rounded-xl border p-4 text-sm"><strong>1. Choose ownership</strong><p className="mt-1 text-muted-foreground">Select the GitHub owner, repository name, and private or public visibility.</p></li>
