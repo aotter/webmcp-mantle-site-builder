@@ -27,7 +27,7 @@ export async function createPreviewDeployment(
     PROJECT_ID: project.id,
     PROJECT_NAME: project.name,
   })
-  const prepared = await prepareDeployment(plan, new MemoryMantleStorageAdapter(project.name, origin))
+  const prepared = await prepareDeployment(plan, new MemoryMantleStorageAdapter(project.name, origin), { handlerNames: [] })
   const runtime = createMantleRuntime({ prepared })
   if (!runtime.siteConfig || !runtime.updateSiteSettings) throw new Error('Sandbox storage did not prepare site settings.')
   const adminRuntime: MantleAdminRuntime = {

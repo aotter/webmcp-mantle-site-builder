@@ -55,11 +55,20 @@ export async function saveProject(project: ProjectRecord): Promise<void> {
   await transactionDone(transaction)
 }
 
-export async function removeProject(id: string): Promise<void> {
+export async function removeProject(id: string, replacement?: ProjectRecord): Promise<void> {
   const database = await openDatabase()
   const transaction = database.transaction(storeName, 'readwrite')
-  transaction.objectStore(storeName).delete(id)
-  await transactionDone(transaction)
+  const done = transactionDone(transaction)
+  try {
+    const store = transaction.objectStore(storeName)
+    store.delete(id)
+    if (replacement) store.put(replacement)
+    await done
+  } catch (error) {
+    try { transaction.abort() } catch { /* Transaction already finished. */ }
+    await done.catch(() => {})
+    throw error
+  }
 }
 
 export function selectedProjectId(): string | null {

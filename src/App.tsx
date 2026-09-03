@@ -1,6 +1,6 @@
 import { bindWebMcp, type WebMcpBinding } from '@aotter/mantle-web/webmcp'
 import type { Operation } from 'fast-json-patch'
-import { Bot, Braces, Check, ChevronDown, Copy, FileJson2, Monitor, Moon, Plus, Smartphone, Sparkles, Sun, Trash2, X } from 'lucide-react'
+import { Bot, Braces, Check, ChevronDown, Copy, Download, FileJson2, Monitor, Moon, Plus, Smartphone, Sparkles, Sun, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -16,6 +16,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { isTrustedAdminSource, readHostApiRequest } from '@/lib/admin-bridge'
 import {
   applyProjectPatch,
   assertActiveTarget,
@@ -28,13 +29,17 @@ import {
   type CandidateResult,
   type ProjectState,
 } from '@/lib/project'
+import { createProjectHandoff, projectArchiveName } from '@/lib/project-export'
 import {
+  adminSourceRevision,
   builderCapabilities,
   getStarted,
+  mantleVersion,
   presetNames,
   proposePreset,
   publicTools,
   referenceSectionNames,
+  runtimeSourceRevision,
   startingPrompt,
   type PresetName,
   type ReferenceSection,
@@ -67,6 +72,7 @@ export default function App() {
   const [project, setProject] = useState(() => createProjectState(initialProjectDocument))
   const [projectsReady, setProjectsReady] = useState(false)
   const [storageError, setStorageError] = useState('')
+  const [exportError, setExportError] = useState('')
   const [deleteCandidate, setDeleteCandidate] = useState<ProjectRecord | null>(null)
   const [webMcpSupported, setWebMcpSupported] = useState<boolean | null>(null)
   const [promptType, setPromptType] = useState<PromptType>('intake')
@@ -74,11 +80,13 @@ export default function App() {
   const [promptCopied, setPromptCopied] = useState(false)
   const [darkMode, setDarkMode] = useState(() => document.documentElement.classList.contains('dark'))
   const [previewViewport, setPreviewViewport] = useState<PreviewViewport>(() => new URLSearchParams(location.search).get('viewport') === 'mobile' ? 'mobile' : 'desktop')
+  const [previewFrameError, setPreviewFrameError] = useState(false)
+  const [previewFrameRetry, setPreviewFrameRetry] = useState(0)
   const currentProjectRef = useRef(currentProject)
   const projectRef = useRef(project)
   const adminIframeRef = useRef<HTMLIFrameElement>(null)
   const buildDialogRef = useRef<HTMLDialogElement>(null)
-  const previewDeploymentRef = useRef<Promise<PreviewDeployment> | null>(null)
+  const previewDeploymentRef = useRef<PreviewDeployment | null>(null)
   const [serializeMutation] = useState(createMutationQueue)
   const closeMenus = useCallback(() => {
     document.querySelectorAll<HTMLDetailsElement>('[data-toolbar-menu][open]').forEach((menu) => { menu.open = false })
@@ -119,63 +127,64 @@ export default function App() {
     setDarkMode(next)
   }
 
-  const installPreviewDeployment = useCallback((state: ProjectState, record: ProjectRecord) => {
-    const deployment = createPreviewDeployment(state.plan, { id: record.id, name: record.name }, location.origin)
-    previewDeploymentRef.current = deployment
-    // ponytail: builder_get_started reads the rejection back; swallow it here so it is never unhandled.
-    void deployment.catch(() => {})
+  const prepareProject = useCallback(async (record: ProjectRecord) => {
+    const state = createProjectState(record.manifest)
+    const deployment = await createPreviewDeployment(state.plan, { id: record.id, name: record.name }, location.origin)
+    publicTools(state)
+    return { record, state, deployment }
   }, [])
 
-  const activateProject = useCallback((record: ProjectRecord) => {
-    const state = createProjectState(record.manifest)
+  const installProject = useCallback((record: ProjectRecord, state: ProjectState, deployment: PreviewDeployment) => {
     currentProjectRef.current = record
     projectRef.current = state
-    installPreviewDeployment(state, record)
+    previewDeploymentRef.current = deployment
     setCurrentProject(record)
     setProject(state)
+    setPreviewFrameError(false)
     selectProjectId(record.id)
-  }, [installPreviewDeployment])
+  }, [])
 
-  const openProject = useCallback((record: ProjectRecord) => {
+  const openProject = useCallback(async (record: ProjectRecord) => {
     try {
-      activateProject(record)
+      const prepared = await prepareProject(record)
+      installProject(prepared.record, prepared.state, prepared.deployment)
       setStorageError('')
       return true
     } catch (error) {
       setStorageError(`Cannot open ${record.name}: ${messageOf(error)}`)
       return false
     }
-  }, [activateProject])
+  }, [installProject, prepareProject])
 
   useEffect(() => {
     let cancelled = false
     void listProjects().then(async (stored) => {
       if (cancelled) return
-      const available = stored.length > 0 ? stored : [currentProjectRef.current]
-      if (stored.length === 0) await saveProject(available[0]!)
-      if (cancelled) return
+      let available = stored.length > 0 ? stored : [currentProjectRef.current]
       setProjects(available)
-      // Saved manifests are untrusted: keep every record listed, but activate one that compiles.
+      // Saved manifests are untrusted: keep every record listed, but only activate one that fully prepares.
       const selected = available.find(({ id }) => id === selectedProjectId())
       const ordered = selected ? [selected, ...available.filter((record) => record !== selected)] : available
       const failures: string[] = []
-      const usable = ordered.find((record) => {
+      let prepared: Awaited<ReturnType<typeof prepareProject>> | undefined
+      for (const record of ordered) {
         try {
-          activateProject(record)
-          return true
+          prepared = await prepareProject(record)
+          break
         } catch (error) {
           failures.push(`${record.name}: ${messageOf(error)}`)
-          return false
         }
-      })
-      if (!usable) {
-        const blank = createProjectRecord()
-        await saveProject(blank)
-        if (cancelled) return
-        setProjects((current) => [blank, ...current])
-        activateProject(blank)
       }
-      if (failures.length > 0) setStorageError(`Skipped saved projects that no longer compile — ${failures.join('; ')}`)
+      if (!prepared) {
+        const blank = createProjectRecord()
+        prepared = await prepareProject(blank)
+        available = [blank, ...available]
+      }
+      if (stored.length === 0 || !stored.some(({ id }) => id === prepared.record.id)) await saveProject(prepared.record)
+      if (cancelled) return
+      setProjects(available)
+      installProject(prepared.record, prepared.state, prepared.deployment)
+      if (failures.length > 0) setStorageError(`Skipped saved projects that cannot run in the sandbox — ${failures.join('; ')}`)
       setProjectsReady(true)
     }).catch((error) => {
       if (cancelled) return
@@ -183,7 +192,7 @@ export default function App() {
       setProjectsReady(true)
     })
     return () => { cancelled = true }
-  }, [activateProject])
+  }, [installProject, prepareProject])
 
   const persistProject = useCallback(async (target: ProjectRecord, state: ProjectState, name: string) => {
     const record: ProjectRecord = { ...target, name, manifest: structuredClone(state.document), updatedAt: Date.now() }
@@ -216,6 +225,7 @@ export default function App() {
     let deployment: PreviewDeployment
     try {
       deployment = await createPreviewDeployment(state.plan, { id: target.id, name: projectName }, location.origin)
+      publicTools(state)
     } catch (error) {
       return {
         valid: true,
@@ -231,11 +241,7 @@ export default function App() {
     // If the user selected another project mid-save, the list is updated but the active project stays put.
     const stillActive = currentProjectRef.current.id === target.id
     if (stillActive) {
-      currentProjectRef.current = record
-      projectRef.current = state
-      previewDeploymentRef.current = Promise.resolve(deployment)
-      setCurrentProject(record)
-      setProject(state)
+      installProject(record, state, deployment)
     }
     return {
       ...projectStateSummary(state),
@@ -246,7 +252,7 @@ export default function App() {
       manifestYaml: projectDocumentYaml(state.document),
       previewTools: publicTools(state),
     }
-  }, [persistProject])
+  }, [installProject, persistProject])
 
   const commitPatch = useCallback((baseRevision: number, patch: readonly Operation[], projectName: string) => (
     commitCandidate(applyProjectPatch(projectRef.current, baseRevision, patch), projectName)
@@ -255,55 +261,65 @@ export default function App() {
   const createNewProject = useCallback(async () => {
     try {
       const record = createProjectRecord()
+      const prepared = await prepareProject(record)
       await saveProject(record)
       setProjects((current) => [record, ...current])
       setStorageError('')
-      activateProject(record)
+      installProject(prepared.record, prepared.state, prepared.deployment)
       closeMenus()
     } catch (error) {
       setStorageError(messageOf(error))
     }
-  }, [activateProject, closeMenus])
+  }, [closeMenus, installProject, prepareProject])
 
   const deleteProject = useCallback(async (record: ProjectRecord) => {
     try {
       let remaining = projects.filter(({ id }) => id !== record.id)
-      if (remaining.length === 0) {
-        const replacement = createProjectRecord()
-        await saveProject(replacement)
-        remaining = [replacement]
+      let next: Awaited<ReturnType<typeof prepareProject>> | undefined
+      if (record.id === currentProjectRef.current.id) {
+        for (const candidate of remaining) {
+          try {
+            next = await prepareProject(candidate)
+            break
+          } catch {
+            // Preserve corrupt rows so the user can inspect or delete them later.
+          }
+        }
+        if (!next) {
+          next = await prepareProject(createProjectRecord())
+          remaining = [next.record, ...remaining]
+        }
       }
-      await removeProject(record.id)
+      const replacement = next && !projects.some(({ id }) => id === next.record.id) ? next.record : undefined
+      await removeProject(record.id, replacement)
       setProjects(remaining)
       setStorageError('')
-      if (record.id === currentProjectRef.current.id && !remaining.some(openProject)) {
-        // Every remaining record is an invalid persisted Manifest; keep them listed but activate a blank one.
-        const blank = createProjectRecord()
-        await saveProject(blank)
-        setProjects([blank, ...remaining])
-        activateProject(blank)
-      }
+      if (next) installProject(next.record, next.state, next.deployment)
       closeMenus()
     } catch (error) {
       setStorageError(messageOf(error))
     }
-  }, [activateProject, closeMenus, openProject, projects])
+  }, [closeMenus, installProject, prepareProject, projects])
 
   const invokePreviewTool = useCallback(async (name: string, input: Record<string, unknown>, signal?: AbortSignal) => {
     const deployment = previewDeploymentRef.current
     if (!deployment) throw new Error('Sandbox runtime is not ready.')
-    return (await deployment).invoke(name, input, signal)
+    return deployment.invoke(name, input, signal)
   }, [])
 
   useEffect(() => {
     const onMessage = async (event: MessageEvent) => {
-      if (event.origin !== location.origin || event.source !== adminIframeRef.current?.contentWindow || !isHostApiMessage(event.data)) return
+      if (!isTrustedAdminSource(event, adminIframeRef.current?.contentWindow ?? null, location.origin)) return
       const port = event.ports[0]
       if (!port) return
       try {
         const deployment = previewDeploymentRef.current
         if (!deployment) throw new Error('Sandbox runtime is not ready.')
-        const response = await (await deployment).fetch(readHostApiRequest(event.data.request))
+        const request = readHostApiRequest(event.data, {
+          projectId: currentProjectRef.current.id,
+          revision: projectRef.current.revision,
+        }, location.origin)
+        const response = await deployment.fetch(request)
         const body = await response.arrayBuffer()
         port.postMessage({ ok: true, status: response.status, headers: [...response.headers], body }, [body])
       } catch (error) {
@@ -324,9 +340,7 @@ export default function App() {
         if (capability.name === 'builder_get_started') {
           // Never reject on a failed preview boot: report it as preview diagnostics instead.
           const deployment = previewDeploymentRef.current
-          const bootError = deployment
-            ? await deployment.then(() => null, (error: unknown) => error ?? new Error('Preview deployment failed.'))
-            : new Error('The preview runtime has not started for this project yet.')
+          const bootError = deployment ? null : new Error('The preview runtime has not started for this project yet.')
           const referenceSection = input.referenceSection === undefined
             ? undefined
             : referenceSectionNames.includes(input.referenceSection as ReferenceSection)
@@ -392,6 +406,30 @@ export default function App() {
     }
   }
 
+  const downloadProject = () => {
+    try {
+      const activeProject = currentProjectRef.current
+      const activeState = projectRef.current
+      const handoff = createProjectHandoff({
+        projectId: activeProject.id,
+        name: activeProject.name,
+        revision: activeState.revision,
+        document: activeState.document,
+      }, { projectId: activeProject.id, revision: activeState.revision })
+      const data = handoff.bytes.buffer.slice(handoff.bytes.byteOffset, handoff.bytes.byteOffset + handoff.bytes.byteLength) as ArrayBuffer
+      const url = URL.createObjectURL(new Blob([data], { type: 'application/zip' }))
+      const link = document.createElement('a')
+      link.href = url
+      link.download = handoff.filename
+      link.click()
+      URL.revokeObjectURL(url)
+      setExportError('')
+      closeMenus()
+    } catch (error) {
+      setExportError(messageOf(error))
+    }
+  }
+
   const summary = projectStateSummary(project)
   const hasProject = Object.values(summary.atoms).some((names) => names.length > 0)
 
@@ -427,7 +465,17 @@ export default function App() {
             <Button variant="outline" size="sm" className="mt-2 w-full" disabled={!projectsReady} onClick={() => void createNewProject()}>
               <Plus /> New project
             </Button>
+            {hasProject && <div className="mt-2 border-t pt-2">
+              <p className="truncate px-1 text-xs font-medium">{projectArchiveName(currentProject.name, currentProject.id)}</p>
+              <p className="px-1 text-[11px] leading-4 text-muted-foreground">{currentProject.name} · Mantle {mantleVersion}</p>
+              <p className="px-1 text-[11px] leading-4 text-muted-foreground" title={`${runtimeSourceRevision} / ${adminSourceRevision}`}>Sources {runtimeSourceRevision.slice(0, 8)} / {adminSourceRevision.slice(0, 8)}</p>
+              <p className="px-1 text-[11px] leading-4 text-muted-foreground">Coding-agent handoff; not a ready-to-run app.</p>
+              <Button variant="outline" size="sm" className="mt-2 w-full" onClick={downloadProject}>
+                <Download /> Download project
+              </Button>
+            </div>}
             {storageError && <p className="mt-2 px-1 text-xs text-destructive">Autosave unavailable: {storageError}</p>}
+            {exportError && <p className="mt-2 px-1 text-xs text-destructive">Download failed: {exportError}</p>}
           </div>
         </details>
 
@@ -458,12 +506,20 @@ export default function App() {
               </div>
               <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl bg-background">
                 <iframe
-                  key={`${currentProject.id}:${project.revision}`}
+                  key={`${currentProject.id}:${project.revision}:${previewFrameRetry}`}
                   ref={adminIframeRef}
-                  src="/_mantle/admin/index.html"
+                  src={`/_mantle/admin/index.html?builderProjectId=${encodeURIComponent(currentProject.id)}&builderRevision=${project.revision}`}
                   title="Mantle Admin preview"
                   className="absolute inset-0 h-full w-full border-0 bg-background"
+                  onLoad={() => setPreviewFrameError(false)}
+                  onError={() => setPreviewFrameError(true)}
                 />
+                {previewFrameError && <div className="absolute inset-0 grid place-items-center bg-background p-6 text-center">
+                  <div>
+                    <p className="text-sm font-medium">Admin preview did not load.</p>
+                    <Button className="mt-3" size="sm" variant="outline" onClick={() => { setPreviewFrameError(false); setPreviewFrameRetry((value) => value + 1) }}>Retry Admin preview</Button>
+                  </div>
+                </div>}
               </div>
             </div>
           </div>}
@@ -579,39 +635,6 @@ function messageOf(error: unknown): string {
 
 function isMessage(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
-interface HostApiMessage {
-  protocolVersion: 1
-  type: 'mantle:host-api:request'
-  request: {
-    url: string
-    method: string
-    headers: [string, string][]
-    body: ArrayBuffer | null
-  }
-}
-
-function isHostApiMessage(value: unknown): value is HostApiMessage {
-  if (!isMessage(value) || value.protocolVersion !== 1 || value.type !== 'mantle:host-api:request' || !isMessage(value.request)) return false
-  const request = value.request
-  return typeof request.url === 'string'
-    && typeof request.method === 'string'
-    && Array.isArray(request.headers)
-    && request.headers.every((header) => Array.isArray(header) && header.length === 2 && header.every((part) => typeof part === 'string'))
-    && (request.body === null || request.body instanceof ArrayBuffer)
-}
-
-function readHostApiRequest(request: HostApiMessage['request']): Request {
-  const url = new URL(request.url)
-  if (url.origin !== location.origin || (!url.pathname.startsWith('/admin/api/') && !url.pathname.startsWith('/api/auth/'))) {
-    throw new TypeError('Admin iframe requested an unsupported host route.')
-  }
-  return new Request(url, {
-    method: request.method,
-    headers: request.headers,
-    ...(request.body ? { body: request.body } : {}),
-  })
 }
 
 function readProjectName(value: unknown): string {

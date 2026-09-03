@@ -1,6 +1,11 @@
 (function installAdminHostBridge() {
   if (window.parent === window) return
 
+  var search = new URLSearchParams(location.search)
+  var projectId = search.get('builderProjectId')
+  var revision = Number(search.get('builderRevision'))
+  if (!projectId || !Number.isInteger(revision)) return
+
   // The iframe boots at /_mantle/admin/index.html, so give the SPA its /admin/dev entry path.
   // Real child routes (/admin/c/*, /admin/views/*, /admin/sign-in, ...) are served the same
   // document by the host Worker and must keep their own path.
@@ -35,6 +40,8 @@
     window.parent.postMessage({
       protocolVersion: 1,
       type: 'mantle:host-api:request',
+      projectId: projectId,
+      revision: revision,
       request: { url: url.href, method: request.method, headers: Array.from(request.headers), body: body },
     }, location.origin, [channel.port2])
     return response

@@ -12,9 +12,9 @@ import {
 import { publicProcedureCapability, publicViewCapability } from './webmcp'
 
 const apiVersion = 'cms.mantle.aotter.net/v1' as const
-const mantleVersion = '0.1.0-alpha.14'
-const runtimeSourceRevision = '620252551b012295a6bb882de4274213e66fe4dd'
-const adminSourceRevision = 'c00b7e9b7399c6c3ff478c35aa7d0653a53e7a2e'
+export const mantleVersion = '0.1.0-alpha.14'
+export const runtimeSourceRevision = '620252551b012295a6bb882de4274213e66fe4dd'
+export const adminSourceRevision = 'c00b7e9b7399c6c3ff478c35aa7d0653a53e7a2e'
 
 const presets = {
   intake: {
@@ -552,6 +552,7 @@ export function getStarted(
     preview: {
       ready: preview.ready,
       appliedRevision: preview.revision,
+      identity: { kind: 'mock-member', userId: 'sandbox-member', credential: 'session' },
       tools: publicTools(state),
       ...(preview.diagnostics?.length
         ? { error: preview.diagnostics[0]!.message, diagnostics: preview.diagnostics }
