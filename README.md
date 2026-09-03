@@ -3,7 +3,8 @@
 **Describe the workflow. Ship the service.**
 
 Mantle Builder is a WebMCP-native workspace where a person describes business
-logic and an agent turns it into an inspectable Mantle service. The agent writes
+logic and an agent turns it into an inspectable
+[Mantle](https://github.com/aotter/mantle) service. The agent writes
 the contract through structured tools; Mantle validates and runs it; the person
 reviews the result in an embedded Admin developer console.
 
