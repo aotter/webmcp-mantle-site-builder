@@ -90,6 +90,7 @@ describe('Builder authoring contract', () => {
     expect(guide.presets.map(({ id }) => id)).toEqual(['intake', 'reservation', 'transaction', 'procurement'])
     expect(guide.project).toMatchObject({ id: 'project-a', revision: 1 })
     expect('content' in guide.manifestReference).toBe(false)
+    expect(guide.preview.identity).toEqual({ kind: 'mock-member', userId: 'sandbox-member', credential: 'session' })
 
     const reference = '## TL;DR\n\nFour atoms.\n\n## Manifest envelope\n\nEnvelope details.'
     const detail = getStarted(state, { ready: true, revision: 1 }, project, { section: 'overview', content: reference })
@@ -186,6 +187,23 @@ describe('Builder authoring contract', () => {
       message: 'Dialect is unavailable in the preview runtime.',
     }))
     expect(carried).toEqual([expect.objectContaining({ code: 'VIEW_DIALECT_UNSUPPORTED', path: '/views/items' })])
+  })
+
+  it('rejects handler refs that the Builder sandbox cannot dispatch', async () => {
+    const document = structuredClone(fixtureDocument)
+    document.procedures.custom = {
+      apiVersion: 'cms.mantle.aotter.net/v1',
+      kind: 'Procedure',
+      metadata: { name: 'custom' },
+      spec: {
+        title: 'Custom',
+        input: { type: 'object' },
+        output: { type: 'object' },
+        handler: { kind: 'ref', ref: 'customHandler' },
+      },
+    }
+    const state = createProjectState(document)
+    await expect(createPreviewDeployment(state.plan, { id: 'test', name: 'Custom' }, 'https://builder.test')).rejects.toThrow()
   })
 
   it('serializes queued mutations so only one commits against a revision', async () => {
