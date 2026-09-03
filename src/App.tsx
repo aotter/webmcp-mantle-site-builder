@@ -65,12 +65,12 @@ import {
 import { createPreviewDeployment, previewDeploymentDiagnostics, type PreviewDeployment } from '@/lib/preview-deployment'
 
 const promptPresets = [
-  { name: 'intake', label: 'Intake', description: 'Request forms, lead capture, applications, support intake, and staff review queues.', brief: 'Build a public intake flow that collects structured requests and gives staff a review queue.' },
-  { name: 'reservation', label: 'Reservation', description: 'Appointments, classes, room or equipment booking, availability, and staff scheduling.', brief: 'Build a reservation service with public booking, a member-friendly status view, and a staff queue.' },
-  { name: 'transaction', label: 'Transaction', description: 'Catalogs, ecommerce, checkout, order operations, and agent-assisted customer service.', brief: 'Build a small catalog and ordering service with public discovery, checkout, and staff order management.' },
-  { name: 'procurement', label: 'Procurement', description: 'Purchase requests, approval chains, vendor workflows, and internal order tracking.', brief: 'Build a procurement workflow where members submit purchase requisitions and staff review them.' },
-  { name: 'blank', label: 'Blank', description: 'Custom workflows that do not fit a preset. Your agent will interview you and design the business logic.', brief: 'Interview me to learn the actors, data, operations, permissions, and entry points this service needs.' },
-] as const satisfies readonly { name: PresetName | 'blank'; label: string; description: string; brief: string }[]
+  { name: 'intake', label: 'Intake', description: 'Request forms, lead capture, applications, support intake, and staff review queues.', starter: 'Public request intake, typed validation, HTTP/MCP entry points, and a staff review queue.', brief: 'Build a public intake flow that collects structured requests and gives staff a review queue.' },
+  { name: 'reservation', label: 'Reservation', description: 'Appointments, classes, room or equipment booking, availability, and staff scheduling.', starter: 'Public reservation intake, typed validation, HTTP/MCP entry points, and a staff review queue.', brief: 'Build a reservation service with public booking, a member-friendly status view, and a staff queue.' },
+  { name: 'transaction', label: 'Transaction', description: 'Catalogs, ecommerce, checkout, order operations, and agent-assisted customer service.', starter: 'A public catalog, HTTP/MCP ordering, and a staff order queue.', brief: 'Build a small catalog and ordering service with public discovery, checkout, and staff order management.' },
+  { name: 'procurement', label: 'Procurement', description: 'Purchase requests, approval chains, vendor workflows, and internal order tracking.', starter: 'Member submission and status, staff approval tools, and role-aware access.', brief: 'Build a procurement workflow where members submit purchase requisitions and staff review them.' },
+  { name: 'blank', label: 'Blank', description: 'Custom workflows that do not fit a preset. Your agent will interview you and design the business logic.', starter: 'An empty validated Manifest ready for a guided requirements interview.', brief: 'Interview me to learn the actors, data, operations, permissions, and entry points this service needs.' },
+] as const satisfies readonly { name: PresetName | 'blank'; label: string; description: string; starter: string; brief: string }[]
 
 type PromptType = (typeof promptPresets)[number]['name']
 type PreviewViewport = 'desktop' | 'mobile'
@@ -106,6 +106,7 @@ export default function App() {
   const adminIframeRef = useRef<HTMLIFrameElement>(null)
   const buildDialogRef = useRef<HTMLDialogElement>(null)
   const previewDeploymentRef = useRef<PreviewDeployment | null>(null)
+  const storyScrollerRef = useRef<HTMLDivElement>(null)
   const [serializeMutation] = useState(createMutationQueue)
   const closeMenus = useCallback(() => {
     document.querySelectorAll<HTMLDetailsElement>('[data-toolbar-menu][open]').forEach((menu) => { menu.open = false })
@@ -468,6 +469,44 @@ export default function App() {
 
   const summary = projectStateSummary(project)
   const hasProject = Object.values(summary.atoms).some((names) => names.length > 0)
+
+  useEffect(() => {
+    const scroller = storyScrollerRef.current
+    if (hasProject || !scroller) return
+    let locked = false
+    let unlockTimer = 0
+    const unlockAfterGesture = () => {
+      window.clearTimeout(unlockTimer)
+      unlockTimer = window.setTimeout(() => { locked = false }, 450)
+    }
+    const onWheel = (event: WheelEvent) => {
+      if (Math.abs(event.deltaY) < 8 || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
+      if (locked) {
+        event.preventDefault()
+        unlockAfterGesture()
+        return
+      }
+      const sections = Array.from(scroller.querySelectorAll<HTMLElement>('.story-section'))
+      const currentIndex = sections.reduce((nearest, section, index) => (
+        Math.abs(section.offsetTop - scroller.scrollTop) < Math.abs(sections[nearest].offsetTop - scroller.scrollTop) ? index : nearest
+      ), 0)
+      const nextIndex = Math.max(0, Math.min(sections.length - 1, currentIndex + Math.sign(event.deltaY)))
+      if (nextIndex === currentIndex) return
+      event.preventDefault()
+      locked = true
+      scroller.scrollTo({
+        top: sections[nextIndex].offsetTop,
+        behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      })
+      unlockAfterGesture()
+    }
+    scroller.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      window.clearTimeout(unlockTimer)
+      scroller.removeEventListener('wheel', onWheel)
+    }
+  }, [hasProject])
+
   const archiveName = projectArchiveName(currentProject.name, currentProject.id)
   const shipInstructions = {
     handoff: `Use the attached ${archiveName} handoff. Read HANDOFF.md first, follow the pinned Mantle develop skill, bootstrap the version-matched Blank project, replace manifests/site.yaml, then implement only the consumer-owned gaps. Run only verification scripts declared by package.json. Follow DEPLOY.md for the default self-managed GitHub Auth setup, and never put secrets in source or chat.`,
@@ -527,6 +566,11 @@ export default function App() {
           >
             <Cloud /> Deploy to Cloudflare
           </Button>
+          <Button asChild variant="ghost" size="icon-sm">
+            <a href="https://github.com/aotter/mantle" target="_blank" rel="noreferrer" aria-label="Open Mantle on GitHub" title="Open Mantle on GitHub">
+              <img src="/github-mark.svg" alt="" className="size-4 dark:invert" />
+            </a>
+          </Button>
           <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label={darkMode ? 'Use light theme' : 'Use dark theme'} title={darkMode ? 'Use light theme' : 'Use dark theme'}>
             {darkMode ? <Sun /> : <Moon />}
           </Button>
@@ -571,51 +615,101 @@ export default function App() {
             </div>
           </div>}
           {!hasProject && (
-            <div className="absolute inset-0 z-10 grid place-items-center p-5">
-              <section className="empty-project-glass w-full max-w-2xl rounded-2xl p-5 sm:p-7">
-                <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Sparkles className="size-4" /> Agent-built · Agent-operated</div>
-                <h1 className="mt-3 text-2xl font-semibold tracking-tight sm:text-3xl">Describe the workflow. Ship the service.</h1>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground"><a href="https://github.com/aotter/mantle" target="_blank" rel="noreferrer" className="font-medium text-foreground underline-offset-4 hover:underline">Mantle</a> turns your business rules into agent-ready services.</p>
-                <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Service outputs">
-                  <Badge variant="secondary">Cloudflare-ready</Badge>
-                  <Badge variant="secondary">API</Badge>
-                  <Badge variant="secondary">MCP</Badge>
-                  <Badge variant="secondary">WebMCP</Badge>
+            <div ref={storyScrollerRef} className="story-scroller absolute inset-0 z-10 overflow-y-auto">
+              <section className="story-section relative grid place-items-center px-5 py-10" aria-labelledby="builder-hero-title">
+                <div className="story-card empty-project-glass w-full max-w-3xl rounded-2xl p-6 sm:p-9">
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Sparkles className="size-4" /> Agent-built · Agent-operated</div>
+                  <h1 id="builder-hero-title" className="mt-3 text-3xl font-semibold tracking-tight sm:text-5xl">Describe the workflow. Ship the service.</h1>
+                  <p className="mt-4 max-w-2xl text-base leading-7 text-muted-foreground"><a href="https://github.com/aotter/mantle" target="_blank" rel="noreferrer" className="font-medium text-foreground underline-offset-4 hover:underline">Mantle</a> turns your business rules into agent-ready services.</p>
+                  <div className="mt-5 flex flex-wrap gap-2" aria-label="Service outputs">
+                    <Badge variant="secondary">Cloudflare-ready</Badge>
+                    <Badge variant="secondary">API</Badge>
+                    <Badge variant="secondary">MCP</Badge>
+                    <Badge variant="secondary">WebMCP</Badge>
+                  </div>
                 </div>
-                <Tabs
-                  value={promptType}
-                  onValueChange={(value) => {
-                    const preset = promptPresets.find(({ name }) => name === value)
-                    if (!preset) return
-                    setPromptType(preset.name)
-                    setPromptCopied(false)
-                  }}
-                  className="mt-5 gap-0 rounded-xl border bg-background/65 shadow-inner backdrop-blur-md"
-                >
-                  <TabsList className="h-auto w-full overflow-x-auto rounded-none bg-transparent p-1" aria-label="Starting prompt type">
+                <a href="#contract" className="absolute bottom-5 left-1/2 inline-flex -translate-x-1/2 flex-col items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:text-foreground" aria-label="Scroll to learn how Mantle works">
+                  Scroll to continue
+                  <span className="animate-bounce motion-reduce:animate-none"><ArrowRight className="size-4 rotate-90" /></span>
+                </a>
+              </section>
+
+              <section id="contract" className="story-section grid place-items-center px-5 py-10" aria-labelledby="contract-title">
+                <div className="story-card empty-project-glass w-full max-w-3xl rounded-2xl p-6 sm:p-9">
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Braces className="size-4" /> Config as code</div>
+                  <h2 id="contract-title" className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Four atoms from which your world takes shape.</h2>
+                  <p className="mt-4 max-w-2xl text-base leading-7 text-muted-foreground">Your agent writes Schema, View, Procedure, and Trigger in one YAML Manifest. Mantle validates the config and carries the runtime complexity.</p>
+                  <div className="mt-5 flex flex-wrap gap-2" aria-label="Mantle atoms">
+                    <Badge variant="secondary">Schema</Badge>
+                    <Badge variant="secondary">View</Badge>
+                    <Badge variant="secondary">Procedure</Badge>
+                    <Badge variant="secondary">Trigger</Badge>
+                  </div>
+                </div>
+              </section>
+
+              <section className="story-section grid place-items-center px-5 py-10" aria-labelledby="operations-title">
+                <div className="story-card empty-project-glass w-full max-w-3xl rounded-2xl p-6 sm:p-9">
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Bot className="size-4" /> Connected operations</div>
+                  <h2 id="operations-title" className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Create the tools your agents are missing.</h2>
+                  <p className="mt-4 max-w-2xl text-base leading-7 text-muted-foreground">One Manifest immediately produces MCP and WebMCP interfaces, ready for your existing agent workflows. Admin gives operations one place to manage customers, orders, and queues.</p>
+                  <div className="mt-5 flex flex-wrap gap-2" aria-label="Operational interfaces">
+                    <Badge variant="secondary">MCP</Badge>
+                    <Badge variant="secondary">WebMCP</Badge>
+                    <Badge variant="secondary">Admin</Badge>
+                  </div>
+                </div>
+              </section>
+
+              <section className="story-section grid place-items-center px-5 py-10" aria-labelledby="handoff-title">
+                <div className="story-card empty-project-glass w-full max-w-3xl rounded-2xl p-6 sm:p-9">
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Rocket className="size-4" /> Agent handoff</div>
+                  <h2 id="handoff-title" className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">From working service to finished product.</h2>
+                  <p className="mt-4 max-w-2xl text-base leading-7 text-muted-foreground">Download the handoff. Your coding agent adds the frontend, authentication, and Cloudflare deployment.</p>
+                </div>
+              </section>
+
+              <section id="starting-point" className="story-section grid place-items-center px-5 py-10" aria-labelledby="starting-point-title">
+                <div className="story-card empty-project-glass w-full max-w-3xl rounded-2xl p-5 sm:p-7">
+                  <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em] text-primary"><Sparkles className="size-4" /> Try it now</div>
+                  <h2 id="starting-point-title" className="mt-3 text-3xl font-semibold tracking-tight sm:text-4xl">Choose an application shape.</h2>
+                  <p className="mt-3 text-sm leading-6 text-muted-foreground">Start from the closest backend workflow. Your agent will interview you, adapt the Manifest, and ask before applying changes.</p>
+                  <Tabs
+                    value={promptType}
+                    onValueChange={(value) => {
+                      const preset = promptPresets.find(({ name }) => name === value)
+                      if (!preset) return
+                      setPromptType(preset.name)
+                      setPromptCopied(false)
+                    }}
+                    className="mt-5 gap-0 rounded-xl border bg-background/65 shadow-inner backdrop-blur-md"
+                  >
+                    <TabsList className="h-auto w-full overflow-x-auto rounded-none bg-transparent p-1" aria-label="Starting prompt type">
+                      {promptPresets.map((preset) => (
+                        <TabsTrigger key={preset.name} value={preset.name} className="prompt-tab min-w-fit px-2.5 py-2 text-xs">
+                          {preset.label}
+                        </TabsTrigger>
+                      ))}
+                    </TabsList>
                     {promptPresets.map((preset) => (
-                      <TabsTrigger key={preset.name} value={preset.name} className="prompt-tab min-w-fit px-2.5 py-2 text-xs">
-                        {preset.label}
-                      </TabsTrigger>
-                    ))}
-                  </TabsList>
-                  {promptPresets.map((preset) => (
-                    <TabsContent key={preset.name} value={preset.name} className="m-0">
-                      <div className="p-3">
-                        <p className="text-sm font-medium leading-5 text-foreground">{preset.description}</p>
-                        <div className="mt-3 flex flex-wrap items-center gap-2" aria-label="Use this starting prompt">
-                          <Badge variant="outline" className="size-6 justify-center rounded-full p-0">1</Badge>
-                          <Button size="sm" onClick={copyStartingPrompt}>
-                            {promptCopied ? <Check /> : <Copy />}{promptCopied ? 'Copied' : 'Copy prompt'}
-                          </Button>
-                          <ArrowRight className="size-4 text-muted-foreground" aria-hidden="true" />
-                          <Badge variant="outline" className="size-6 justify-center rounded-full p-0">2</Badge>
-                          <span className="text-sm text-muted-foreground">Paste into your agent chat</span>
+                      <TabsContent key={preset.name} value={preset.name} className="m-0">
+                        <div className="p-3">
+                          <p className="text-sm font-medium leading-5 text-foreground">{preset.description}</p>
+                          <p className="mt-1 text-xs leading-5 text-muted-foreground">Starts with {preset.starter.charAt(0).toLowerCase() + preset.starter.slice(1)}</p>
+                          <div className="mt-4 flex flex-wrap items-center gap-2" aria-label="Use this starting prompt">
+                            <Badge variant="outline" className="size-6 justify-center rounded-full p-0">1</Badge>
+                            <Button size="sm" onClick={copyStartingPrompt}>
+                              {promptCopied ? <Check /> : <Copy />}{promptCopied ? 'Copied' : 'Copy prompt'}
+                            </Button>
+                            <ArrowRight className="size-4 text-muted-foreground" aria-hidden="true" />
+                            <Badge variant="outline" className="size-6 justify-center rounded-full p-0">2</Badge>
+                            <span className="text-sm text-muted-foreground">Paste into your agent chat</span>
+                          </div>
                         </div>
-                      </div>
-                    </TabsContent>
-                  ))}
-                </Tabs>
+                      </TabsContent>
+                    ))}
+                  </Tabs>
+                </div>
               </section>
             </div>
           )}
