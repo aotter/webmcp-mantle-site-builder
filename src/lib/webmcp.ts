@@ -3,14 +3,14 @@ import type { JsonSchema, ProcedureManifest, ViewManifest } from '@aotter/mantle
 
 const emptyInput: JsonSchema = { type: 'object', properties: {}, additionalProperties: false }
 
-export function publicViewCapability(name: string, description: string): ViewCallableCapability {
+export function publicViewCapability(name: string, description: string, inputSchema: JsonSchema = emptyInput): ViewCallableCapability {
   const manifest: ViewManifest = {
     apiVersion: 'cms.mantle.aotter.net/v1',
     kind: 'View',
     metadata: { name },
     spec: { title: name, surface: 'public', from: 'builder-projects', fields: ['id'] },
   }
-  return { name, kind: 'view', ownerName: name, surface: 'public', description, inputSchema: emptyInput, manifest }
+  return { name, kind: 'view', ownerName: name, surface: 'public', description, inputSchema, manifest }
 }
 
 export function publicProcedureCapability(

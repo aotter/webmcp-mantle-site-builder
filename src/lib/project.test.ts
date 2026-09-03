@@ -2,11 +2,21 @@ import { describe, expect, it } from 'vitest'
 
 import {
   applyProjectPatch,
+  assertActiveTarget,
   createProjectState,
   initialProjectDocument,
+  type CandidateResult,
   type ProjectDocument,
+  type ProjectState,
 } from './project'
-import { applyStarter, getStarted, publicTools, starterNames } from './builder'
+import {
+  builderCapabilities,
+  getStarted,
+  presetNames,
+  proposePreset,
+  publicTools,
+  startingPrompt,
+} from './builder'
 import { createPreviewDeployment } from './preview-deployment'
 
 const fixtureDocument: ProjectDocument = {
@@ -30,55 +40,113 @@ const fixtureDocument: ProjectDocument = {
   triggers: {},
 }
 
-describe('Manifest revision boundary', () => {
-  it('keeps the active deployment on the last valid revision', () => {
-    expect(createProjectState(initialProjectDocument).activePlan.views).toEqual({})
+function accept(result: CandidateResult): ProjectState {
+  if (!result.ok) throw new Error(result.diagnostics.map(({ message }) => message).join('; '))
+  return { ...result.candidate, revision: result.nextRevision }
+}
+
+describe('Builder authoring contract', () => {
+  it('returns candidates and leaves committed state unchanged when a patch is invalid', () => {
+    expect(createProjectState(initialProjectDocument).plan.views).toEqual({})
 
     const initial = createProjectState(fixtureDocument)
-    const valid = applyProjectPatch(initial, 1, [
+    const committed = accept(applyProjectPatch(initial, 1, [
       { op: 'replace', path: '/views/items/spec/title', value: 'Available items' },
-    ])
-    expect(valid.activated).toBe(true)
+    ]))
+    expect(committed.revision).toBe(2)
+    expect(initial.document.views.items?.spec.title).toBe('Items')
 
-    const invalid = applyProjectPatch(valid.state, 2, [
+    const invalid = applyProjectPatch(committed, 2, [
       { op: 'replace', path: '/views/items/spec/from', value: 'missing-schema' },
     ])
-    expect(invalid.activated).toBe(false)
-    expect(invalid.state.activeRevision).toBe(2)
-    expect(invalid.state.diagnostics[0]?.path).toBe('/views/items/spec/from')
+    expect(invalid.ok).toBe(false)
+    if (invalid.ok) throw new Error('Expected the candidate to be rejected.')
+    expect(invalid.currentRevision).toBe(2)
+    expect(invalid.diagnostics[0]?.path).toBe('/views/items/spec/from')
+    expect(committed.document.views.items?.spec.from).toBe('items')
+    expect(committed.revision).toBe(2)
   })
 
-  it('does not mutate a draft when a JSON Patch fails halfway through', () => {
-    const initial = createProjectState(fixtureDocument)
-    expect(() => applyProjectPatch(initial, 1, [
+  it('does not mutate the document when JSON Patch application fails', () => {
+    const state = createProjectState(fixtureDocument)
+    const invalid = applyProjectPatch(state, 1, [
       { op: 'replace', path: '/views/items/spec/title', value: 'Changed' },
       { op: 'replace', path: '/views/items/spec/missing', value: 'Invalid' },
-    ])).toThrow()
-    expect(initial.draftDocument.views.items?.spec.title).toBe('Items')
+    ])
+    expect(invalid.ok).toBe(false)
+    if (invalid.ok) throw new Error('Expected the patch to be rejected.')
+    expect(invalid.diagnostics[0]?.code).toBe('INVALID_JSON_PATCH')
+    expect(state.document.views.items?.spec.title).toBe('Items')
+    expect(state.revision).toBe(1)
   })
 
-  it('starts from an official example and returns agent-readable grammar', () => {
-    const initial = createProjectState(initialProjectDocument)
-    const guide = getStarted(initial, { ready: true, revision: 1 }, '# Mantle design atoms')
-    expect(guide.manifestReference).toEqual({
-      source: '@aotter/mantle/docs/design-atoms.md',
-      content: '# Mantle design atoms',
-    })
-    expect(guide.starters.map(({ name }) => name)).toEqual(['intake', 'reservation', 'transaction', 'procurement'])
+  it('describes the pinned grammar concisely and returns only a requested embedded section', () => {
+    const state = createProjectState(initialProjectDocument)
+    const project = { id: 'project-a', name: 'Untitled project' }
+    const guide = getStarted(state, { ready: true, revision: 1 }, project)
+    expect(guide.presets.map(({ id }) => id)).toEqual(['intake', 'reservation', 'transaction', 'procurement'])
+    expect(guide.project).toMatchObject({ id: 'project-a', revision: 1 })
+    expect('content' in guide.manifestReference).toBe(false)
 
-    for (const starter of starterNames) expect(applyStarter(initial, starter, 1).response.valid).toBe(true)
+    const reference = '## TL;DR\n\nFour atoms.\n\n## Manifest envelope\n\nEnvelope details.'
+    const detail = getStarted(state, { ready: true, revision: 1 }, project, { section: 'overview', content: reference })
+    expect(detail.manifestReference.content).toMatch(/^## TL;DR/)
+    expect(detail.manifestReference.content).not.toContain('## Manifest envelope')
+    expect(JSON.stringify(guide)).not.toMatch(/starter/i)
+  })
 
-    const started = applyStarter(initial, 'transaction', 1)
-    expect(started.response.valid).toBe(true)
-    expect(started.response.document.triggers['place-order-mcp']?.spec.source.kind).toBe('mcp')
-    expect(publicTools(started.state).some(({ ownerName }) => ownerName === 'place-order')).toBe(true)
-    expect(applyStarter(initial, 'procurement', 1).response.document.triggers['review-requisition-mcp']?.spec.source).toMatchObject({ kind: 'mcp', surface: 'staff' })
-    expect(() => applyStarter(started.state, 'intake', 2)).toThrow('replace: true')
+  it('compiles all four host presets offline and rejects a preset on a non-empty project', () => {
+    const empty = createProjectState(initialProjectDocument)
+    for (const preset of presetNames) expect(proposePreset(empty, preset, 1).ok).toBe(true)
+
+    const transaction = accept(proposePreset(empty, 'transaction', 1))
+    expect(transaction.document.triggers['place-order-mcp']?.spec.source.kind).toBe('mcp')
+    expect(publicTools(transaction).some(({ ownerName }) => ownerName === 'place-order')).toBe(true)
+
+    const procurement = accept(proposePreset(empty, 'procurement', 1))
+    expect(procurement.document.triggers['review-requisition-mcp']?.spec.source).toMatchObject({ kind: 'mcp', surface: 'staff' })
+    expect(() => proposePreset(transaction, 'intake', 2)).toThrow('empty project')
+  })
+
+  it('rejects stale revisions and delayed mutations for another project', () => {
+    expect(() => applyProjectPatch(createProjectState(fixtureDocument), 2, [])).toThrow('Revision conflict')
+    expect(() => assertActiveTarget({ id: 'project-b', revision: 1 }, { projectId: 'project-a', baseRevision: 1 })).toThrow('Project changed')
+    expect(() => assertActiveTarget({ id: 'project-a', revision: 2 }, { projectId: 'project-a', baseRevision: 1 })).toThrow('Project changed')
+    expect(() => assertActiveTarget({ id: 'project-a', revision: 1 }, { projectId: 'project-a', baseRevision: 1 })).not.toThrow()
+  })
+
+  it('keeps registered tool schemas and copied prompts on the same contract', () => {
+    const schemas = Object.fromEntries(builderCapabilities.map(({ name, inputSchema }) => [name, inputSchema])) as Record<string, { required?: string[] }>
+    expect(Object.keys(schemas)).toEqual([
+      'builder_get_started',
+      'builder_apply_preset',
+      'builder_apply_manifest_patch',
+      'builder_call_preview_tool',
+    ])
+    expect(schemas.builder_apply_preset?.required).toEqual(['projectId', 'baseRevision', 'preset', 'projectName'])
+    expect(schemas.builder_apply_manifest_patch?.required).toEqual(['projectId', 'baseRevision', 'projectName', 'patch'])
+    expect(schemas.builder_call_preview_tool?.required).toEqual(['projectId', 'baseRevision', 'name', 'input'])
+
+    for (const preset of presetNames) {
+      const prompt = startingPrompt(preset, 'Build it.')
+      expect(prompt).toContain('builder_get_started')
+      expect(prompt).toContain('builder_apply_preset')
+      expect(prompt).toContain('projectId')
+      expect(prompt).toContain('revision')
+      expect(prompt).not.toMatch(/starter/i)
+    }
+    const blank = startingPrompt('blank', 'Build it.')
+    expect(blank).toContain('builder_apply_manifest_patch')
+    expect(blank).not.toContain('builder_apply_preset')
+  })
+
+  it('keeps Blank as exactly four empty atom groups', () => {
+    expect(initialProjectDocument).toEqual({ schemas: {}, views: {}, procedures: {}, triggers: {} })
   })
 
   it('serves Admin and invokes public tools through one host runtime', async () => {
-    const started = applyStarter(createProjectState(initialProjectDocument), 'intake', 1)
-    const deployment = await createPreviewDeployment(started.state.activePlan, { id: 'test', name: 'Customer intake' }, 'https://builder.test')
+    const state = accept(proposePreset(createProjectState(initialProjectDocument), 'intake', 1))
+    const deployment = await createPreviewDeployment(state.plan, { id: 'test', name: 'Customer intake' }, 'https://builder.test')
 
     const developer = await deployment.fetch(new Request('https://builder.test/admin/api/developer-console'))
     expect(developer.status).toBe(200)
