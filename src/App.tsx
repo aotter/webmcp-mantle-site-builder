@@ -524,7 +524,7 @@ export default function App() {
             aria-label="Deploy to Cloudflare"
             title={hasProject ? 'Deploy to Cloudflare' : 'Add Manifest resources before deploying'}
           >
-            Deploy to Cloudflare
+            <Cloud /> Deploy to Cloudflare
           </Button>
           <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label={darkMode ? 'Use light theme' : 'Use dark theme'} title={darkMode ? 'Use light theme' : 'Use dark theme'}>
             {darkMode ? <Sun /> : <Moon />}
