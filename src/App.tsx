@@ -19,6 +19,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
   applyProjectPatch,
   assertActiveTarget,
+  createMutationQueue,
   createProjectState,
   initialProjectDocument,
   projectDocumentYaml,
@@ -47,7 +48,7 @@ import {
   selectProjectId,
   type ProjectRecord,
 } from '@/lib/project-store'
-import { createPreviewDeployment, type PreviewDeployment } from '@/lib/preview-deployment'
+import { createPreviewDeployment, previewDeploymentDiagnostics, type PreviewDeployment } from '@/lib/preview-deployment'
 
 const promptPresets = [
   { name: 'intake', label: 'Intake', brief: 'Build a public intake flow that collects structured requests and gives staff a review queue.' },
@@ -78,6 +79,7 @@ export default function App() {
   const adminIframeRef = useRef<HTMLIFrameElement>(null)
   const buildDialogRef = useRef<HTMLDialogElement>(null)
   const previewDeploymentRef = useRef<Promise<PreviewDeployment> | null>(null)
+  const [serializeMutation] = useState(createMutationQueue)
   const closeMenus = useCallback(() => {
     document.querySelectorAll<HTMLDetailsElement>('[data-toolbar-menu][open]').forEach((menu) => { menu.open = false })
   }, [])
@@ -120,7 +122,8 @@ export default function App() {
   const installPreviewDeployment = useCallback((state: ProjectState, record: ProjectRecord) => {
     const deployment = createPreviewDeployment(state.plan, { id: record.id, name: record.name }, location.origin)
     previewDeploymentRef.current = deployment
-    void deployment.catch((error) => console.error('Sandbox deployment failed.', error))
+    // ponytail: builder_get_started reads the rejection back; swallow it here so it is never unhandled.
+    void deployment.catch(() => {})
   }, [])
 
   const activateProject = useCallback((record: ProjectRecord) => {
@@ -133,67 +136,117 @@ export default function App() {
     selectProjectId(record.id)
   }, [installPreviewDeployment])
 
+  const openProject = useCallback((record: ProjectRecord) => {
+    try {
+      activateProject(record)
+      setStorageError('')
+      return true
+    } catch (error) {
+      setStorageError(`Cannot open ${record.name}: ${messageOf(error)}`)
+      return false
+    }
+  }, [activateProject])
+
   useEffect(() => {
     let cancelled = false
     void listProjects().then(async (stored) => {
+      if (cancelled) return
       const available = stored.length > 0 ? stored : [currentProjectRef.current]
       if (stored.length === 0) await saveProject(available[0]!)
       if (cancelled) return
-      const selected = available.find(({ id }) => id === selectedProjectId()) ?? available[0]!
       setProjects(available)
-      activateProject(selected)
+      // Saved manifests are untrusted: keep every record listed, but activate one that compiles.
+      const selected = available.find(({ id }) => id === selectedProjectId())
+      const ordered = selected ? [selected, ...available.filter((record) => record !== selected)] : available
+      const failures: string[] = []
+      const usable = ordered.find((record) => {
+        try {
+          activateProject(record)
+          return true
+        } catch (error) {
+          failures.push(`${record.name}: ${messageOf(error)}`)
+          return false
+        }
+      })
+      if (!usable) {
+        const blank = createProjectRecord()
+        await saveProject(blank)
+        if (cancelled) return
+        setProjects((current) => [blank, ...current])
+        activateProject(blank)
+      }
+      if (failures.length > 0) setStorageError(`Skipped saved projects that no longer compile — ${failures.join('; ')}`)
       setProjectsReady(true)
     }).catch((error) => {
       if (cancelled) return
-      setStorageError(error instanceof Error ? error.message : String(error))
+      setStorageError(messageOf(error))
       setProjectsReady(true)
     })
     return () => { cancelled = true }
   }, [activateProject])
 
-  const persistActiveProject = useCallback(async (state: ProjectState, name: string) => {
-    const record: ProjectRecord = {
-      ...currentProjectRef.current,
-      name,
-      manifest: structuredClone(state.document),
-      updatedAt: Date.now(),
-    }
+  const persistProject = useCallback(async (target: ProjectRecord, state: ProjectState, name: string) => {
+    const record: ProjectRecord = { ...target, name, manifest: structuredClone(state.document), updatedAt: Date.now() }
     try {
       await saveProject(record)
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error))
+      setStorageError(messageOf(error))
       throw error
     }
-    currentProjectRef.current = record
-    setCurrentProject(record)
     setProjects((current) => [record, ...current.filter(({ id }) => id !== record.id)].sort((left, right) => right.updatedAt - left.updatedAt))
     setStorageError('')
+    return record
   }, [])
 
   const commitCandidate = useCallback(async (result: CandidateResult, projectName: string) => {
+    // Capture the target: the user may switch projects while the save is pending.
+    const target = currentProjectRef.current
     if (!result.ok) {
       return {
         valid: false,
         activated: false,
         currentRevision: result.currentRevision,
         diagnostics: result.diagnostics,
-        project: { id: currentProjectRef.current.id, name: currentProjectRef.current.name },
+        project: { id: target.id, name: target.name },
       }
     }
     const state: ProjectState = { ...result.candidate, revision: result.nextRevision }
-    await persistActiveProject(state, projectName)
-    projectRef.current = state
-    installPreviewDeployment(state, currentProjectRef.current)
-    setProject(state)
+
+    // A compiled Manifest can still fail to boot. Prove the preview first, then persist.
+    let deployment: PreviewDeployment
+    try {
+      deployment = await createPreviewDeployment(state.plan, { id: target.id, name: projectName }, location.origin)
+    } catch (error) {
+      return {
+        valid: true,
+        activated: false,
+        // The candidate's own base revision — projectRef may point at another project after the await.
+        currentRevision: result.nextRevision - 1,
+        diagnostics: previewDeploymentDiagnostics(error),
+        project: { id: target.id, name: target.name },
+      }
+    }
+
+    const record = await persistProject(target, state, projectName)
+    // If the user selected another project mid-save, the list is updated but the active project stays put.
+    const stillActive = currentProjectRef.current.id === target.id
+    if (stillActive) {
+      currentProjectRef.current = record
+      projectRef.current = state
+      previewDeploymentRef.current = Promise.resolve(deployment)
+      setCurrentProject(record)
+      setProject(state)
+    }
     return {
       ...projectStateSummary(state),
       activated: true,
-      project: { id: currentProjectRef.current.id, name: currentProjectRef.current.name },
+      active: stillActive,
+      project: { id: record.id, name: record.name },
       document: state.document,
       manifestYaml: projectDocumentYaml(state.document),
       previewTools: publicTools(state),
     }
-  }, [installPreviewDeployment, persistActiveProject])
+  }, [persistProject])
 
   const commitPatch = useCallback((baseRevision: number, patch: readonly Operation[], projectName: string) => (
     commitCandidate(applyProjectPatch(projectRef.current, baseRevision, patch), projectName)
@@ -208,7 +261,7 @@ export default function App() {
       activateProject(record)
       closeMenus()
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error))
+      setStorageError(messageOf(error))
     }
   }, [activateProject, closeMenus])
 
@@ -223,12 +276,18 @@ export default function App() {
       await removeProject(record.id)
       setProjects(remaining)
       setStorageError('')
-      if (record.id === currentProjectRef.current.id) activateProject(remaining[0]!)
+      if (record.id === currentProjectRef.current.id && !remaining.some(openProject)) {
+        // Every remaining record is an invalid persisted Manifest; keep them listed but activate a blank one.
+        const blank = createProjectRecord()
+        await saveProject(blank)
+        setProjects([blank, ...remaining])
+        activateProject(blank)
+      }
       closeMenus()
     } catch (error) {
-      setStorageError(error instanceof Error ? error.message : String(error))
+      setStorageError(messageOf(error))
     }
-  }, [activateProject, closeMenus, projects])
+  }, [activateProject, closeMenus, openProject, projects])
 
   const invokePreviewTool = useCallback(async (name: string, input: Record<string, unknown>, signal?: AbortSignal) => {
     const deployment = previewDeploymentRef.current
@@ -263,8 +322,11 @@ export default function App() {
       capabilities: builderCapabilities,
       invoke: async (capability, input, signal) => {
         if (capability.name === 'builder_get_started') {
+          // Never reject on a failed preview boot: report it as preview diagnostics instead.
           const deployment = previewDeploymentRef.current
-          if (deployment) await deployment
+          const bootError = deployment
+            ? await deployment.then(() => null, (error: unknown) => error ?? new Error('Preview deployment failed.'))
+            : new Error('The preview runtime has not started for this project yet.')
           const referenceSection = input.referenceSection === undefined
             ? undefined
             : referenceSectionNames.includes(input.referenceSection as ReferenceSection)
@@ -278,21 +340,30 @@ export default function App() {
           }
           return getStarted(
             projectRef.current,
-            { ready: deployment !== null, revision: projectRef.current.revision },
+            {
+              ready: bootError === null,
+              revision: projectRef.current.revision,
+              ...(bootError === null ? {} : { diagnostics: previewDeploymentDiagnostics(bootError) }),
+            },
             { id: currentProjectRef.current.id, name: currentProjectRef.current.name },
             reference,
           )
         }
         if (capability.name === 'builder_apply_preset') {
-          assertActiveTarget({ id: currentProjectRef.current.id, revision: projectRef.current.revision }, input)
-          if (typeof input.preset !== 'string' || !presetNames.includes(input.preset as PresetName)) throw new TypeError('Choose a preset returned by builder_get_started.')
-          const projectName = readProjectName(input.projectName)
-          return { preset: input.preset, ...await commitCandidate(proposePreset(projectRef.current, input.preset as PresetName, input.baseRevision), projectName) }
+          // Queued so two concurrent mutations cannot both commit against one revision.
+          return serializeMutation(async () => {
+            assertActiveTarget({ id: currentProjectRef.current.id, revision: projectRef.current.revision }, input)
+            if (typeof input.preset !== 'string' || !presetNames.includes(input.preset as PresetName)) throw new TypeError('Choose a preset returned by builder_get_started.')
+            const projectName = readProjectName(input.projectName)
+            return { preset: input.preset, ...await commitCandidate(proposePreset(projectRef.current, input.preset as PresetName, input.baseRevision), projectName) }
+          })
         }
         if (capability.name === 'builder_apply_manifest_patch') {
-          assertActiveTarget({ id: currentProjectRef.current.id, revision: projectRef.current.revision }, input)
-          const projectName = readProjectName(input.projectName)
-          return commitPatch(input.baseRevision, readPatch(input.patch), projectName)
+          return serializeMutation(async () => {
+            assertActiveTarget({ id: currentProjectRef.current.id, revision: projectRef.current.revision }, input)
+            const projectName = readProjectName(input.projectName)
+            return commitPatch(input.baseRevision, readPatch(input.patch), projectName)
+          })
         }
         if (capability.name === 'builder_call_preview_tool') {
           assertActiveTarget({ id: currentProjectRef.current.id, revision: projectRef.current.revision }, input)
@@ -310,7 +381,7 @@ export default function App() {
       disposed = true
       binding?.dispose()
     }
-  }, [commitCandidate, commitPatch, invokePreviewTool, projectsReady])
+  }, [commitCandidate, commitPatch, invokePreviewTool, projectsReady, serializeMutation])
 
   const copyStartingPrompt = async () => {
     try {
@@ -342,7 +413,7 @@ export default function App() {
                   <button
                     type="button"
                     className="min-w-0 flex-1 px-2.5 py-2 text-left"
-                    onClick={() => { activateProject(record); closeMenus() }}
+                    onClick={() => { openProject(record); closeMenus() }}
                   >
                     <span className="block truncate text-sm font-medium">{record.name}</span>
                     <span className="block text-xs text-muted-foreground">{new Date(record.updatedAt).toLocaleString()}</span>
@@ -500,6 +571,10 @@ export default function App() {
       </dialog>
     </div>
   )
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function isMessage(value: unknown): value is Record<string, unknown> {

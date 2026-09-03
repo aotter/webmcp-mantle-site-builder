@@ -1,14 +1,17 @@
+import { DiagnosticError } from '@aotter/mantle-spec'
 import { describe, expect, it } from 'vitest'
 
 import {
   applyProjectPatch,
   assertActiveTarget,
+  createMutationQueue,
   createProjectState,
   initialProjectDocument,
   type CandidateResult,
   type ProjectDocument,
   type ProjectState,
 } from './project'
+import { readProjectRecords } from './project-store'
 import {
   builderCapabilities,
   getStarted,
@@ -17,7 +20,7 @@ import {
   publicTools,
   startingPrompt,
 } from './builder'
-import { createPreviewDeployment } from './preview-deployment'
+import { createPreviewDeployment, previewDeploymentDiagnostics } from './preview-deployment'
 
 const fixtureDocument: ProjectDocument = {
   schemas: {
@@ -163,5 +166,60 @@ describe('Builder authoring contract', () => {
     const queue = await deployment.fetch(new Request('https://builder.test/admin/api/views/recent-requests'))
     expect(queue.status).toBe(200)
     await expect(queue.json()).resolves.toMatchObject({ data: { rows: [expect.objectContaining({ name: 'Ada' })] } })
+  })
+
+  it('reports a failed preview boot as actionable diagnostics instead of an opaque rejection', async () => {
+    const boot = await createPreviewDeployment({} as never, { id: 'test', name: 'Broken' }, 'https://builder.test')
+      .then(() => null, (error: unknown) => error)
+    expect(boot).not.toBeNull()
+
+    const diagnostics = previewDeploymentDiagnostics(boot)
+    expect(diagnostics).toHaveLength(1)
+    expect(diagnostics[0]).toMatchObject({ code: 'PREVIEW_BOOT_FAILED', phase: 'boot', severity: 'error', path: '/' })
+    expect(diagnostics[0]?.suggestion).toContain('cannot boot')
+
+    const carried = previewDeploymentDiagnostics(new DiagnosticError({
+      code: 'VIEW_DIALECT_UNSUPPORTED',
+      phase: 'boot',
+      severity: 'error',
+      path: '/views/items',
+      message: 'Dialect is unavailable in the preview runtime.',
+    }))
+    expect(carried).toEqual([expect.objectContaining({ code: 'VIEW_DIALECT_UNSUPPORTED', path: '/views/items' })])
+  })
+
+  it('serializes queued mutations so only one commits against a revision', async () => {
+    const serialize = createMutationQueue()
+    let committed = createProjectState(fixtureDocument)
+    const mutate = (baseRevision: number, title: string) => serialize(async () => {
+      assertActiveTarget({ id: 'project-a', revision: committed.revision }, { projectId: 'project-a', baseRevision })
+      const result = applyProjectPatch(committed, baseRevision, [{ op: 'replace', path: '/views/items/spec/title', value: title }])
+      await Promise.resolve()
+      committed = accept(result)
+      return committed.revision
+    })
+
+    const [first, second] = await Promise.allSettled([mutate(1, 'First'), mutate(1, 'Second')])
+    expect(first).toMatchObject({ status: 'fulfilled', value: 2 })
+    expect(second).toMatchObject({ status: 'rejected' })
+    expect((second as PromiseRejectedResult).reason).toMatchObject({ message: expect.stringContaining('Project changed') })
+    expect(committed.revision).toBe(2)
+    expect(committed.document.views.items?.spec.title).toBe('First')
+  })
+
+  it('keeps every readable saved record and normalizes untrusted fields', () => {
+    const records = readProjectRecords([
+      null,
+      'not a record',
+      [{ id: 'array' }],
+      { name: 'No id', updatedAt: 9 },
+      { id: 'broken', name: '  ', manifest: { schemas: 'nope' }, updatedAt: Number.NaN },
+      { id: 'newer', name: 'Newer', manifest: initialProjectDocument, updatedAt: 20 },
+      { id: 'older', name: 'Older', manifest: initialProjectDocument, updatedAt: 10 },
+    ])
+    expect(records.map(({ id }) => id)).toEqual(['newer', 'older', 'broken'])
+    expect(records[2]).toMatchObject({ name: 'Untitled project', updatedAt: 0 })
+    expect(() => createProjectState(records[2]!.manifest)).toThrow()
+    expect(() => createProjectState(records[0]!.manifest)).not.toThrow()
   })
 })

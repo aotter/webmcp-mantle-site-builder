@@ -157,6 +157,20 @@ export function assertActiveTarget(
   }
 }
 
+/**
+ * Runs mutating tool calls one at a time. Each task revalidates projectId and
+ * baseRevision after it acquires the queue, so two concurrent calls cannot both
+ * commit against the same revision.
+ */
+export function createMutationQueue() {
+  let tail: Promise<unknown> = Promise.resolve()
+  return function serialize<T>(task: () => Promise<T>): Promise<T> {
+    const next = tail.then(task, task)
+    tail = next.catch(() => {})
+    return next
+  }
+}
+
 export function readPatch(value: unknown): Operation[] {
   if (!Array.isArray(value) || value.length === 0) throw new TypeError('patch must be a non-empty array.')
   const allowed = new Set(['add', 'remove', 'replace', 'move', 'copy', 'test'])

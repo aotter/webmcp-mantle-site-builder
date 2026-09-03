@@ -6,9 +6,11 @@ import {
   type HandlerContext,
   type RuntimePlan,
 } from '@aotter/mantle-runtime'
+import { DiagnosticError } from '@aotter/mantle-spec'
 import { Hono } from 'hono'
 
 import { MemoryMantleStorageAdapter } from './memory-storage'
+import type { BuilderDiagnostic } from './project'
 
 export interface PreviewDeployment {
   fetch(request: Request): Promise<Response>
@@ -73,6 +75,34 @@ export async function createPreviewDeployment(
       return response.result
     },
   }
+}
+
+const bootSuggestion = 'The Manifest compiles but cannot boot in the Builder preview runtime. Revise the atoms named above and apply the patch again.'
+
+/**
+ * A Manifest can compile and still fail to boot here — the host sandbox is an
+ * in-memory adapter with no native View dialects. Report that as diagnostics so
+ * the agent can fix the Manifest instead of seeing an opaque rejection.
+ */
+export function previewDeploymentDiagnostics(error: unknown): BuilderDiagnostic[] {
+  if (error instanceof DiagnosticError) {
+    return error.diagnostics.map(({ code, phase, severity, path, message, suggestion }) => ({
+      code,
+      phase,
+      severity,
+      path,
+      message,
+      suggestion: suggestion ?? bootSuggestion,
+    }))
+  }
+  return [{
+    code: 'PREVIEW_BOOT_FAILED',
+    phase: 'boot',
+    severity: 'error',
+    path: '/',
+    message: error instanceof Error ? error.message : 'Preview deployment failed.',
+    suggestion: bootSuggestion,
+  }]
 }
 
 const mockAdminAuth: AdminAuth = {

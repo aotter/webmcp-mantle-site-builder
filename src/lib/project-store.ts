@@ -23,8 +23,29 @@ export function createProjectRecord(): ProjectRecord {
 
 export async function listProjects(): Promise<ProjectRecord[]> {
   const database = await openDatabase()
-  const records = await request(database.transaction(storeName).objectStore(storeName).getAll()) as ProjectRecord[]
-  return records.sort((left, right) => right.updatedAt - left.updatedAt)
+  const records = await request(database.transaction(storeName).objectStore(storeName).getAll()) as unknown[]
+  return readProjectRecords(records)
+}
+
+/**
+ * Saved rows are untrusted: an older Builder revision may have written any shape.
+ * Keep every row that still has an id so the user can delete it, and leave the
+ * manifest untouched — it is validated when the project is activated.
+ */
+export function readProjectRecords(values: readonly unknown[]): ProjectRecord[] {
+  return values
+    .flatMap((value) => {
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return []
+      const record = value as Partial<ProjectRecord>
+      if (typeof record.id !== 'string' || record.id.length === 0) return []
+      return [{
+        id: record.id,
+        name: typeof record.name === 'string' && record.name.trim().length > 0 ? record.name : 'Untitled project',
+        manifest: record.manifest as ProjectDocument,
+        updatedAt: typeof record.updatedAt === 'number' && Number.isFinite(record.updatedAt) ? record.updatedAt : 0,
+      }]
+    })
+    .sort((left, right) => right.updatedAt - left.updatedAt)
 }
 
 export async function saveProject(project: ProjectRecord): Promise<void> {
@@ -51,12 +72,15 @@ export function selectProjectId(id: string): void {
 
 function openDatabase(): Promise<IDBDatabase> {
   if (connection) return connection
-  connection = new Promise((resolve, reject) => {
+  connection = new Promise<IDBDatabase>((resolve, reject) => {
     const opening = indexedDB.open(databaseName, 1)
     opening.onupgradeneeded = () => opening.result.createObjectStore(storeName, { keyPath: 'id' })
     opening.onsuccess = () => resolve(opening.result)
     opening.onerror = () => reject(opening.error)
     opening.onblocked = () => reject(new Error('IndexedDB upgrade is blocked by another tab.'))
+  }).catch((error: unknown) => {
+    connection = undefined
+    throw error
   })
   return connection
 }

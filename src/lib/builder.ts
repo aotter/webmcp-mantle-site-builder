@@ -4,6 +4,7 @@ import type { Operation } from 'fast-json-patch'
 import {
   applyProjectPatch,
   projectStateSummary,
+  type BuilderDiagnostic,
   type CandidateResult,
   type ProjectDocument,
   type ProjectState,
@@ -494,7 +495,7 @@ export const builderCapabilities = [
 
 export function getStarted(
   state: ProjectState,
-  preview: { ready: boolean; revision: number },
+  preview: { ready: boolean; revision: number; diagnostics?: BuilderDiagnostic[] },
   project = { id: '', name: 'Untitled project' },
   reference?: { section: ReferenceSection; content: string },
 ) {
@@ -552,6 +553,9 @@ export function getStarted(
       ready: preview.ready,
       appliedRevision: preview.revision,
       tools: publicTools(state),
+      ...(preview.diagnostics?.length
+        ? { error: preview.diagnostics[0]!.message, diagnostics: preview.diagnostics }
+        : {}),
     },
   }
 }

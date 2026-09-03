@@ -1,7 +1,11 @@
 (function installAdminHostBridge() {
   if (window.parent === window) return
 
-  history.replaceState(null, '', '/admin/dev')
+  // The iframe boots at /_mantle/admin/index.html, so give the SPA its /admin/dev entry path.
+  // Real child routes (/admin/c/*, /admin/views/*, /admin/sign-in, ...) are served the same
+  // document by the host Worker and must keep their own path.
+  var path = location.pathname
+  if (path !== '/admin' && path.indexOf('/admin/') !== 0) history.replaceState(null, '', '/admin/dev')
   var networkFetch = window.fetch.bind(window)
   window.fetch = async function hostFetch(input, init) {
     var request = new Request(input, init)
@@ -24,7 +28,8 @@
           reject(new TypeError(event.data && event.data.error || 'Admin API request failed.'))
           return
         }
-        resolve(new Response(event.data.body, { status: event.data.status, headers: event.data.headers }))
+        var nullBodyStatus = event.data.status === 204 || event.data.status === 205 || event.data.status === 304
+        resolve(new Response(nullBodyStatus ? null : event.data.body, { status: event.data.status, headers: event.data.headers }))
       }
     })
     window.parent.postMessage({
