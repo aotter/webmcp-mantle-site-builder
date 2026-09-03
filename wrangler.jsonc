@@ -5,9 +5,13 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "webmcp-mantle-site-builder",
+	"account_id": "9fa99f475c0e4db5e46f36a42235d887",
 	"main": "worker/index.ts",
 	"compatibility_date": "2026-09-02",
 	"compatibility_flags": ["nodejs_compat"],
+	"routes": [
+		{ "pattern": "webmcp-builder.mantle.tools", "custom_domain": true }
+	],
 	"assets": {
 		"binding": "ASSETS",
 		"not_found_handling": "single-page-application",
