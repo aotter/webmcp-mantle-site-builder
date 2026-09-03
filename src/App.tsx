@@ -426,8 +426,10 @@ export default function App() {
       const link = document.createElement('a')
       link.href = url
       link.download = handoff.filename
+      document.body.append(link)
       link.click()
-      URL.revokeObjectURL(url)
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 0)
       setExportError('')
       closeMenus()
     } catch (error) {
