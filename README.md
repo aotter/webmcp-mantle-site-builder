@@ -1,7 +1,7 @@
 # WebMCP Mantle Site Builder
 
 Competition project for building Mantle sites through host WebMCP tools while a
-same-origin iframe renders the last valid compiled Manifest revision.
+same-origin iframe renders the last valid revision in Mantle Admin Dev Console.
 
 ## Stack
 
@@ -17,11 +17,17 @@ npm install
 npm run dev
 ```
 
-The host is served at `/`, the generated preview document at `/preview`, and
-the Worker health endpoint at `/api/health`.
+The host is served at `/` and Mantle Admin Dev Console is copied from the pinned
+unreleased package into `/_mantle/admin/`. The Worker health endpoint is
+available at `/api/health`.
 
-Set `VITE_MANTLE_ADMIN_URL` to the generated site's `/admin/dev` route to pin
-the existing Mantle developer console beside the preview.
+The iframe boots `/_mantle/admin/index.html`, which the host bridge renames to
+`/admin/dev`. Admin is a client-side SPA, so any document navigation under
+`/admin/*` (except `/admin/api/*`) is served that same Admin document by the
+Worker — `run_worker_first` in `wrangler.jsonc` keeps this ahead of the host SPA
+fallback in both dev and deploy. `/admin/api/*` and `/api/auth/*` stay on the
+postMessage host bridge, so Admin's `location.href` CSV export download
+(`/admin/api/entries/export`) is not supported inside the iframe.
 
 ## Verification
 

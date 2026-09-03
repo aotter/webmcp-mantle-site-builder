@@ -4,7 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/sync-mantle-admin-ui.mjs",
     "dev": "vite",
+    "prebuild": "node scripts/sync-mantle-admin-ui.mjs",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "lint": "oxlint",
@@ -15,6 +17,7 @@
     "cf-typegen": "wrangler types"
   },
   "dependencies": {
+    "@aotter/mantle-admin": "file:vendor/aotter-mantle-admin-0.1.0-alpha.14.tgz",
     "@aotter/mantle-runtime": "file:vendor/aotter-mantle-runtime-0.1.0-alpha.14.tgz",
     "@aotter/mantle-spec": "file:vendor/aotter-mantle-spec-0.1.0-alpha.14.tgz",
     "@aotter/mantle-web": "file:vendor/aotter-mantle-web-0.1.0-alpha.14.tgz",
@@ -24,6 +27,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "fast-json-patch": "^3.1.1",
+    "hono": "^4.13.5",
     "lucide-react": "^1.39.0",
     "radix-ui": "^1.6.7",
     "react": "^19.2.8",
@@ -36,6 +40,8 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@aotter/mantle": "file:vendor/aotter-mantle-0.1.0-alpha.14.tgz",
+    "@aotter/mantle-admin-ui": "file:vendor/aotter-mantle-admin-ui-0.1.0-alpha.14.tgz",
     "@cloudflare/vite-plugin": "^1.54.3",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",

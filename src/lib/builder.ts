@@ -1,23 +1,25 @@
 import { projectCallableCapabilities } from '@aotter/mantle-runtime'
-import { BUILTIN_OPS, LIFECYCLE_HOOKS, MCP_TRIGGER_SURFACES, STAFF_ROLES } from '@aotter/mantle-spec'
 import type { Operation } from 'fast-json-patch'
 
 import {
   applyProjectPatch,
-  projectDocumentYaml,
   projectStateSummary,
+  type BuilderDiagnostic,
+  type CandidateResult,
   type ProjectDocument,
   type ProjectState,
 } from './project'
+import { publicProcedureCapability, publicViewCapability } from './webmcp'
 
 const apiVersion = 'cms.mantle.aotter.net/v1' as const
 const mantleVersion = '0.1.0-alpha.14'
+const runtimeSourceRevision = '620252551b012295a6bb882de4274213e66fe4dd'
+const adminSourceRevision = 'c00b7e9b7399c6c3ff478c35aa7d0653a53e7a2e'
 
-const starters = {
+const presets = {
   intake: {
     description: 'Collect a public request and let staff review recent submissions.',
     bestFor: ['contact', 'application', 'intake', 'request', 'lead'],
-    source: 'https://github.com/aotter/mantle-starters/blob/develop/overlays/intake/manifests/site.yaml',
     document: {
       schemas: {
         requests: {
@@ -99,7 +101,6 @@ const starters = {
   reservation: {
     description: 'Accept public reservations and expose the queue to staff.',
     bestFor: ['appointment', 'booking', 'reservation', 'schedule'],
-    source: 'https://github.com/aotter/mantle-starters/blob/develop/overlays/reservation/manifests/site.yaml',
     document: {
       schemas: {
         reservations: {
@@ -183,7 +184,6 @@ const starters = {
   transaction: {
     description: 'Publish a catalog and accept orders through HTTP, MCP, and WebMCP.',
     bestFor: ['catalog', 'checkout', 'commerce', 'inventory', 'order', 'transaction'],
-    source: 'https://github.com/aotter/mantle-starters/blob/develop/overlays/transaction/manifests/site.yaml',
     document: {
       schemas: {
         'catalog-items': {
@@ -298,7 +298,6 @@ const starters = {
   procurement: {
     description: 'Collect member purchase requisitions and let staff review the queue.',
     bestFor: ['approval', 'procurement', 'purchase request', 'requisition', 'supply'],
-    source: 'https://github.com/aotter/mantle-starters/tree/develop/overlays/transaction',
     document: {
       schemas: {
         'purchase-requisitions': {
@@ -434,78 +433,176 @@ const starters = {
   },
 } as const
 
-export type StarterName = keyof typeof starters
-export const starterNames = Object.keys(starters) as StarterName[]
+export type PresetName = keyof typeof presets
+export const presetNames = Object.keys(presets) as PresetName[]
+export const referenceSectionNames = ['overview', 'schema', 'view', 'procedure', 'trigger', 'builtin', 'auth'] as const
+export type ReferenceSection = (typeof referenceSectionNames)[number]
 
-export function getStarted(state: ProjectState, preview: { ready: boolean; revision: number }) {
-  return {
-    mantleVersion,
-    workflow: [
-      'Choose the closest starter and call builder_apply_starter.',
-      'Use the returned document as the working example, then customize with builder_apply_manifest_patch.',
-      'On rejection, repair the draft using its draftRevision and structured diagnostics.',
-      'Call builder_call_preview_tool with a projected public tool to verify the active revision.',
-    ],
-    grammar: {
-      document: {
-        '/schemas/<name>': 'Stored entity shape.',
-        '/views/<name>': 'Typed read/query surface over a Schema.',
-        '/procedures/<name>': 'Typed operation using a built-in CRUD handler or a registered handler ref.',
-        '/triggers/<name>': 'HTTP, MCP, or lifecycle binding to a Procedure.',
+export const builderCapabilities = [
+  publicViewCapability('builder_get_started', 'Call this first to inspect the pinned Mantle grammar, Builder presets, active project, and exact next tool calls.', {
+    type: 'object',
+    properties: { referenceSection: { type: 'string', enum: referenceSectionNames } },
+    additionalProperties: false,
+  }),
+  publicProcedureCapability('builder_apply_preset', 'Apply one host-owned preset to the active empty project.', {
+    type: 'object',
+    properties: {
+      projectId: { type: 'string', minLength: 1 },
+      baseRevision: { type: 'integer', minimum: 1 },
+      preset: { type: 'string', enum: presetNames },
+      projectName: { type: 'string', minLength: 1, maxLength: 80 },
+    },
+    required: ['projectId', 'baseRevision', 'preset', 'projectName'],
+    additionalProperties: false,
+  }),
+  publicProcedureCapability('builder_apply_manifest_patch', 'Compile an RFC 6902 JSON Patch against the active committed Mantle Manifest.', {
+    type: 'object',
+    properties: {
+      projectId: { type: 'string', minLength: 1 },
+      baseRevision: { type: 'integer', minimum: 1 },
+      projectName: { type: 'string', minLength: 1, maxLength: 80 },
+      patch: {
+        type: 'array',
+        minItems: 1,
+        items: {
+          type: 'object',
+          properties: {
+            op: { type: 'string', enum: ['add', 'remove', 'replace', 'move', 'copy', 'test'] },
+            path: { type: 'string' },
+            from: { type: 'string' },
+            value: {},
+          },
+          required: ['op', 'path'],
+          additionalProperties: false,
+        },
       },
-      invariants: [
-        'Every map key must equal metadata.name and kind must match its map.',
-        'Views reference existing Schemas; Triggers reference existing Procedures.',
-        'GET reads are Views. Procedure HTTP triggers use POST, PUT, PATCH, or DELETE.',
-        'Public MCP triggers project browser WebMCP tools; staff tools remain authenticated.',
-      ],
-      builtins: { operations: BUILTIN_OPS, lifecycleHooks: LIFECYCLE_HOOKS, mcpSurfaces: MCP_TRIGGER_SURFACES, staffRoles: STAFF_ROLES },
     },
-    limits: ['This Builder currently edits Manifest atoms only. Use built-in handlers; handler refs require generated TypeScript that this toolset cannot write yet.'],
+    required: ['projectId', 'baseRevision', 'projectName', 'patch'],
+    additionalProperties: false,
+  }),
+  publicProcedureCapability('builder_call_preview_tool', 'Call a projected public capability in the active site preview.', {
+    type: 'object',
+    properties: {
+      projectId: { type: 'string', minLength: 1 },
+      baseRevision: { type: 'integer', minimum: 1 },
+      name: { type: 'string' },
+      input: { type: 'object', additionalProperties: true },
+    },
+    required: ['projectId', 'baseRevision', 'name', 'input'],
+    additionalProperties: false,
+  }),
+]
+
+export function getStarted(
+  state: ProjectState,
+  preview: { ready: boolean; revision: number; diagnostics?: BuilderDiagnostic[] },
+  project = { id: '', name: 'Untitled project' },
+  reference?: { section: ReferenceSection; content: string },
+) {
+  return {
+    pinned: {
+      packages: {
+        '@aotter/mantle': mantleVersion,
+        '@aotter/mantle-admin': mantleVersion,
+        '@aotter/mantle-admin-ui': mantleVersion,
+        '@aotter/mantle-runtime': mantleVersion,
+        '@aotter/mantle-spec': mantleVersion,
+        '@aotter/mantle-web': mantleVersion,
+      },
+      sourceRevisions: {
+        runtimeSpecWeb: runtimeSourceRevision,
+        adminAndDocs: adminSourceRevision,
+      },
+    },
+    grammar: {
+      atoms: {
+        Schema: 'Defines stored entity shape, lifecycle, and indexes.',
+        View: 'Defines a named read surface over one Schema.',
+        Procedure: 'Defines typed business logic; the Builder supports builtin handlers only.',
+        Trigger: 'Binds HTTP, MCP, or lifecycle input to one Procedure.',
+      },
+      triggerSourceKinds: ['http', 'mcp', 'lifecycle'],
+      builtinHandlers: ['create', 'update', 'upsert', 'delete', 'archive'],
+      surfaces: ['public', 'staff'],
+      authorization: 'Use requires.auth on Views and Procedures for user, staff-role, credential, or delegated-scope gates.',
+    },
+    manifestReference: {
+      source: '@aotter/mantle/docs/design-atoms.md',
+      availableSections: referenceSectionNames,
+      ...(reference ? { section: reference.section, content: extractReferenceSection(reference.content, reference.section) } : {}),
+    },
+    limits: ['This Builder supports declarative Views and builtin Procedure handlers. Handler refs require generated TypeScript and are not authorable here yet.'],
     official: {
-      developSkill: `https://github.com/aotter/mantle/blob/v${mantleVersion}/skills/develop/SKILL.md`,
-      manifestGrammar: `https://github.com/aotter/mantle/blob/v${mantleVersion}/packages/mantle-spec/src/domain/model/ManifestGrammar.ts`,
-      fourAtomDecision: `https://github.com/aotter/mantle/blob/v${mantleVersion}/docs/adr/0001-four-atom-manifest-model.md`,
-      starterExamples: 'https://github.com/aotter/mantle-starters/tree/develop/overlays',
+      developSkill: `https://github.com/aotter/mantle/blob/${adminSourceRevision}/skills/develop/SKILL.md`,
+      fourAtomDecision: `https://github.com/aotter/mantle/blob/${adminSourceRevision}/docs/adr/0001-four-atom-manifest-model.md`,
     },
-    starters: starterNames.map((name) => ({ name, description: starters[name].description, bestFor: starters[name].bestFor, source: starters[name].source })),
-    project: { ...projectStateSummary(state), document: state.draftDocument },
+    presets: presetNames.map((name) => ({ id: name, description: presets[name].description, bestFor: presets[name].bestFor })),
+    blankWorkflow: [
+      'Interview the user about actors, data, operations, permissions, and entry points.',
+      'Summarize the proposed Schema, View, Procedure, and Trigger model and wait for confirmation.',
+      'Submit one complete builder_apply_manifest_patch call against the empty document.',
+    ],
+    nextTools: {
+      preset: { name: 'builder_apply_preset', required: ['projectId', 'baseRevision', 'preset', 'projectName'] },
+      blank: { name: 'builder_apply_manifest_patch', required: ['projectId', 'baseRevision', 'projectName', 'patch'] },
+      patch: { name: 'builder_apply_manifest_patch', required: ['projectId', 'baseRevision', 'projectName', 'patch'] },
+      preview: { name: 'builder_call_preview_tool', required: ['projectId', 'baseRevision', 'name', 'input'] },
+    },
+    project: { ...project, ...projectStateSummary(state), document: state.document },
     preview: {
       ready: preview.ready,
       appliedRevision: preview.revision,
       tools: publicTools(state),
+      ...(preview.diagnostics?.length
+        ? { error: preview.diagnostics[0]!.message, diagnostics: preview.diagnostics }
+        : {}),
     },
   }
 }
 
-export function applyStarter(state: ProjectState, name: StarterName, baseRevision: number, replace = false) {
-  if (!starterNames.includes(name)) throw new TypeError(`Unknown starter '${name}'.`)
-  if (!replace && Object.values(state.draftDocument).some((group) => Object.keys(group).length > 0)) {
-    throw new Error('The project is not empty. Pass replace: true to replace the current draft explicitly.')
+export function proposePreset(state: ProjectState, name: PresetName, baseRevision: number): CandidateResult {
+  if (!presetNames.includes(name)) throw new TypeError(`Unknown preset '${name}'.`)
+  if (Object.values(state.document).some((group) => Object.keys(group).length > 0)) {
+    throw new Error('Presets can only be applied to an empty project. Create a new project to choose another preset.')
   }
-  const document = structuredClone(starters[name].document) as ProjectDocument
+  const document = structuredClone(presets[name].document) as ProjectDocument
   const patch: Operation[] = Object.entries(document).map(([group, value]) => ({ op: 'replace', path: `/${group}`, value }))
-  const result = applyProjectPatch(state, baseRevision, patch)
-  return {
-    ...result,
-    response: {
-      starter: name,
-      source: starters[name].source,
-      ...projectStateSummary(result.state),
-      document: result.state.draftDocument,
-      manifestYaml: projectDocumentYaml(result.state.draftDocument),
-      previewTools: publicTools(result.state),
-      next: 'Customize this valid example with builder_apply_manifest_patch, then test one of previewTools through builder_call_preview_tool.',
-    },
-  }
+  return applyProjectPatch(state, baseRevision, patch)
 }
 
-export function publicTools(state: ProjectState) {
-  return projectCallableCapabilities(state.activePlan, { surface: 'public' }).map(({ name, kind, ownerName, description, inputSchema }) => ({
+export function startingPrompt(type: PresetName | 'blank', brief: string) {
+  if (type === 'blank') {
+    return `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first.\n2. Interview me about actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. After confirmation, choose a concise projectName and submit one complete builder_apply_manifest_patch call with the returned projectId and revision.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then call builder_call_preview_tool with that projectId and revision to test a projected public capability.\n\nStarting context:\n${brief.trim()}`
+  }
+  return `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Choose a concise projectName, then call builder_apply_preset with the returned projectId and revision, preset "${type}", and projectName. The host supplies the premade Manifest.\n3. Customize it with builder_apply_manifest_patch using the same projectId, current revision, and projectName.\n4. If validation fails, correct the patch against the unchanged currentRevision.\n5. Call builder_call_preview_tool with that projectId and revision to test a projected public capability.\n\nService brief:\n${brief.trim()}`
+}
+
+export function publicTools(state: Pick<ProjectState, 'plan'>) {
+  return projectCallableCapabilities(state.plan, { surface: 'public' }).map(({ name, kind, ownerName, description, inputSchema }) => ({
     name,
     kind,
     ownerName,
     description,
     inputSchema,
   }))
+}
+
+const referenceHeadings: Record<ReferenceSection, string> = {
+  overview: '## TL;DR',
+  schema: '### 1. `Schema`',
+  view: '### 2. `View`',
+  procedure: '### 3. `Procedure`',
+  trigger: '### 4. `Trigger`',
+  builtin: '### `handler.kind: builtin`',
+  auth: '## RBAC',
+}
+
+function extractReferenceSection(markdown: string, section: ReferenceSection) {
+  const lines = markdown.split('\n')
+  const heading = referenceHeadings[section]
+  const start = lines.findIndex((line) => line.startsWith(heading))
+  if (start < 0) throw new Error(`Embedded Mantle reference is missing the '${section}' section.`)
+  const level = heading.indexOf(' ')
+  const end = lines.findIndex((line, index) => index > start && /^#{1,6} /.test(line) && line.indexOf(' ') <= level)
+  return lines.slice(start, end < 0 ? undefined : end).join('\n').trim()
 }

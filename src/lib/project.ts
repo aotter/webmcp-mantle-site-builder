@@ -20,15 +20,23 @@ export interface ProjectDocument {
 }
 
 export interface ProjectState {
-  draftDocument: ProjectDocument
-  draftRevision: number
-  activeDocument: ProjectDocument
-  activeRevision: number
-  activePlan: RuntimePlan
+  document: ProjectDocument
+  revision: number
+  plan: RuntimePlan
   diagnostics: BuilderDiagnostic[]
 }
 
-export type BuilderDiagnostic = Pick<Diagnostic, 'code' | 'phase' | 'severity' | 'path' | 'message' | 'suggestion'>
+export type BuilderDiagnostic = Omit<Pick<Diagnostic, 'code' | 'phase' | 'severity' | 'path' | 'message' | 'suggestion'>, 'code'> & { code: string }
+
+export interface ProjectCandidate {
+  document: ProjectDocument
+  plan: RuntimePlan
+  diagnostics: BuilderDiagnostic[]
+}
+
+export type CandidateResult =
+  | { ok: true; candidate: ProjectCandidate; nextRevision: number }
+  | { ok: false; currentRevision: number; diagnostics: BuilderDiagnostic[] }
 
 export const initialProjectDocument: ProjectDocument = {
   schemas: {},
@@ -88,61 +96,78 @@ export function createProjectState(document: ProjectDocument): ProjectState {
   const compilation = compileProjectDocument(document)
   if (!compilation.ok) throw new Error(`Initial project is invalid: ${compilation.diagnostics.map(({ message }) => message).join('; ')}`)
   return {
-    draftDocument: structuredClone(document),
-    draftRevision: 1,
-    activeDocument: structuredClone(document),
-    activeRevision: 1,
-    activePlan: compilation.plan,
+    document: structuredClone(document),
+    revision: 1,
+    plan: compilation.plan,
     diagnostics: compilation.diagnostics,
   }
 }
 
-export function applyProjectPatch(state: ProjectState, baseRevision: number, patch: readonly Operation[]) {
-  if (baseRevision !== state.draftRevision) {
-    throw new Error(`Revision conflict: expected ${state.draftRevision}, received ${baseRevision}.`)
+export function applyProjectPatch(state: ProjectState, baseRevision: number, patch: readonly Operation[]): CandidateResult {
+  if (baseRevision !== state.revision) {
+    throw new Error(`Revision conflict: expected ${state.revision}, received ${baseRevision}.`)
   }
 
-  const draftDocument = applyJsonPatch(state.draftDocument, patch)
-  const draftRevision = state.draftRevision + 1
-  const compilation = compileProjectDocument(draftDocument)
+  let document: ProjectDocument
+  try {
+    document = applyJsonPatch(state.document, patch)
+  } catch (error) {
+    return { ok: false, currentRevision: state.revision, diagnostics: [invalidPatchDiagnostic(error)] }
+  }
+
+  const compilation = compileProjectDocument(document)
   if (!compilation.ok) {
-    return {
-      state: { ...state, draftDocument, draftRevision, diagnostics: compilation.diagnostics },
-      activated: false as const,
-      activation: null,
-    }
+    return { ok: false, currentRevision: state.revision, diagnostics: compilation.diagnostics }
   }
 
   return {
-    state: {
-      draftDocument,
-      draftRevision,
-      activeDocument: structuredClone(draftDocument),
-      activeRevision: draftRevision,
-      activePlan: compilation.plan,
+    ok: true,
+    candidate: {
+      document,
+      plan: compilation.plan,
       diagnostics: compilation.diagnostics,
     },
-    activated: true as const,
-    activation: {
-      baseRevision: state.activeRevision,
-      revision: draftRevision,
-      patch: jsonPatch.compare(state.activeDocument, draftDocument, true),
-    },
+    nextRevision: state.revision + 1,
   }
 }
 
 export function projectStateSummary(state: ProjectState) {
   return {
-    draftRevision: state.draftRevision,
-    activeRevision: state.activeRevision,
-    valid: state.draftRevision === state.activeRevision,
+    revision: state.revision,
+    valid: true,
     diagnostics: state.diagnostics,
     atoms: {
-      schemas: Object.keys(state.activePlan.schemas).sort(),
-      views: Object.keys(state.activePlan.views).sort(),
-      procedures: Object.keys(state.activePlan.procedures).sort(),
-      triggers: Object.keys(state.activePlan.triggers).sort(),
+      schemas: Object.keys(state.plan.schemas).sort(),
+      views: Object.keys(state.plan.views).sort(),
+      procedures: Object.keys(state.plan.procedures).sort(),
+      triggers: Object.keys(state.plan.triggers).sort(),
     },
+  }
+}
+
+export function assertActiveTarget(
+  current: { id: string; revision: number },
+  input: Record<string, unknown>,
+): asserts input is Record<string, unknown> & { projectId: string; baseRevision: number } {
+  if (typeof input.projectId !== 'string' || !Number.isInteger(input.baseRevision)) {
+    throw new TypeError('projectId and integer baseRevision are required.')
+  }
+  if (input.projectId !== current.id || input.baseRevision !== current.revision) {
+    throw new Error('Project changed. Call builder_get_started again.')
+  }
+}
+
+/**
+ * Runs mutating tool calls one at a time. Each task revalidates projectId and
+ * baseRevision after it acquires the queue, so two concurrent calls cannot both
+ * commit against the same revision.
+ */
+export function createMutationQueue() {
+  let tail: Promise<unknown> = Promise.resolve()
+  return function serialize<T>(task: () => Promise<T>): Promise<T> {
+    const next = tail.then(task, task)
+    tail = next.catch(() => {})
+    return next
   }
 }
 
@@ -155,45 +180,6 @@ export function readPatch(value: unknown): Operation[] {
     }
   }
   return value as Operation[]
-}
-
-export interface PreviewState {
-  document: ProjectDocument | null
-  revision: number
-  plan: RuntimePlan | null
-}
-
-export function emptyPreviewState(): PreviewState {
-  return { document: null, revision: 0, plan: null }
-}
-
-export function applyPreviewSync(state: PreviewState, message: unknown) {
-  if (!isRecord(message)) return { kind: 'ignored' as const, state }
-  if (message.type === 'mantle:preview:snapshot') {
-    if (!Number.isInteger(message.revision) || !isRecord(message.document)) throw new TypeError('Invalid preview snapshot.')
-    assertProjectDocument(message.document)
-    return activatePreview(message.document, Number(message.revision))
-  }
-  if (message.type !== 'mantle:preview:patch') return { kind: 'ignored' as const, state }
-  if (!Number.isInteger(message.baseRevision) || !Number.isInteger(message.revision)) throw new TypeError('Invalid preview patch revision.')
-  if (!state.document || message.baseRevision !== state.revision) {
-    return {
-      kind: 'resync' as const,
-      state,
-      expectedRevision: state.revision,
-      receivedRevision: Number(message.baseRevision),
-    }
-  }
-  return activatePreview(applyJsonPatch(state.document, readPatch(message.patch)), Number(message.revision))
-}
-
-function activatePreview(document: ProjectDocument, revision: number) {
-  const compilation = compileProjectDocument(document)
-  if (!compilation.ok) return { kind: 'error' as const, diagnostics: compilation.diagnostics }
-  return {
-    kind: 'applied' as const,
-    state: { document: structuredClone(document), revision, plan: compilation.plan },
-  }
 }
 
 function applyJsonPatch<T>(document: T, patch: readonly Operation[]): T {
@@ -226,6 +212,16 @@ function builderDiagnostic({ code, phase, severity, path, source, message, sugge
 function invalidDocumentDiagnostic(error: unknown): BuilderDiagnostic {
   return {
     code: 'INVALID_MANIFEST_ENVELOPE',
+    phase: 'validate',
+    severity: 'error',
+    path: '/',
+    message: messageOf(error),
+  }
+}
+
+function invalidPatchDiagnostic(error: unknown): BuilderDiagnostic {
+  return {
+    code: 'INVALID_JSON_PATCH',
     phase: 'validate',
     severity: 'error',
     path: '/',
