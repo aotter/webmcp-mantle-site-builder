@@ -237,6 +237,11 @@ export default function App() {
       }
     }
 
+    // The user may switch or delete the project while deployment preparation is pending.
+    assertActiveTarget(
+      { id: currentProjectRef.current.id, revision: projectRef.current.revision },
+      { projectId: target.id, baseRevision: result.nextRevision - 1 },
+    )
     const record = await persistProject(target, state, projectName)
     // If the user selected another project mid-save, the list is updated but the active project stays put.
     const stillActive = currentProjectRef.current.id === target.id
