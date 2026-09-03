@@ -12,9 +12,9 @@ import {
 import { publicProcedureCapability, publicViewCapability } from './webmcp'
 
 const apiVersion = 'cms.mantle.aotter.net/v1' as const
-export const mantleVersion = '0.1.0-alpha.14'
-export const runtimeSourceRevision = '620252551b012295a6bb882de4274213e66fe4dd'
-export const adminSourceRevision = 'c00b7e9b7399c6c3ff478c35aa7d0653a53e7a2e'
+export const mantleVersion = '0.1.0-alpha.15'
+export const runtimeSourceRevision = 'b2a6e04ff5820c121d660e6b4f5786884f002cfd'
+export const adminSourceRevision = 'b2a6e04ff5820c121d660e6b4f5786884f002cfd'
 
 const presets = {
   intake: {
