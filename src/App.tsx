@@ -1,6 +1,6 @@
 import { bindWebMcp, type WebMcpBinding } from '@aotter/mantle-web/webmcp'
 import type { Operation } from 'fast-json-patch'
-import { Bot, Braces, Check, ChevronDown, Copy, Download, FileJson2, Monitor, Moon, Plus, Smartphone, Sparkles, Sun, Trash2, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Bot, Braces, Check, ChevronDown, Cloud, Copy, Download, ExternalLink, FileJson2, GitBranch, Monitor, Moon, Plus, Rocket, Smartphone, Sparkles, Sun, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -15,6 +15,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { isTrustedAdminSource, readHostApiRequest } from '@/lib/admin-bridge'
 import {
@@ -65,6 +74,14 @@ const promptPresets = [
 
 type PromptType = (typeof promptPresets)[number]['name']
 type PreviewViewport = 'desktop' | 'mobile'
+type ShipStep = 'handoff' | 'github' | 'cloudflare'
+
+const cloudflareSteps = [
+  { title: 'Create application', description: 'Open Workers & Pages and choose Create application.', image: '/cloudflare-guide/create.svg' },
+  { title: 'Connect GitHub', description: 'Choose Continue with GitHub.', image: '/cloudflare-guide/github.svg' },
+  { title: 'Select repository', description: 'Select the runnable repository your coding agent pushed.', image: '/cloudflare-guide/repo.svg' },
+  { title: 'Deploy', description: 'Keep the project name, deploy, then open the site.', image: '/cloudflare-guide/deploy.svg' },
+] as const
 
 export default function App() {
   const [currentProject, setCurrentProject] = useState(createProjectRecord)
@@ -73,6 +90,9 @@ export default function App() {
   const [projectsReady, setProjectsReady] = useState(false)
   const [storageError, setStorageError] = useState('')
   const [exportError, setExportError] = useState('')
+  const [shipOpen, setShipOpen] = useState(false)
+  const [shipStep, setShipStep] = useState<ShipStep>('handoff')
+  const [shipCopied, setShipCopied] = useState<ShipStep | null>(null)
   const [deleteCandidate, setDeleteCandidate] = useState<ProjectRecord | null>(null)
   const [webMcpSupported, setWebMcpSupported] = useState<boolean | null>(null)
   const [promptType, setPromptType] = useState<PromptType>('intake')
@@ -411,6 +431,15 @@ export default function App() {
     }
   }
 
+  const copyShipInstructions = async (step: ShipStep, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setShipCopied(step)
+    } catch {
+      setShipCopied(null)
+    }
+  }
+
   const downloadProject = () => {
     try {
       const activeProject = currentProjectRef.current
@@ -431,7 +460,6 @@ export default function App() {
       link.remove()
       setTimeout(() => URL.revokeObjectURL(url), 1_000)
       setExportError('')
-      closeMenus()
     } catch (error) {
       setExportError(messageOf(error))
     }
@@ -439,6 +467,12 @@ export default function App() {
 
   const summary = projectStateSummary(project)
   const hasProject = Object.values(summary.atoms).some((names) => names.length > 0)
+  const archiveName = projectArchiveName(currentProject.name, currentProject.id)
+  const shipInstructions = {
+    handoff: `Use the attached ${archiveName} handoff. Read HANDOFF.md first, follow the pinned Mantle develop skill, bootstrap the version-matched Blank project, replace manifests/site.yaml, then implement only the consumer-owned gaps. Run validation, generation, typecheck, tests, and build before reporting back.`,
+    github: `After the runnable ${currentProject.name} project passes its checks, ask me to choose the GitHub owner, repository name, and visibility. Create that repository, commit the generated project without secrets, push it, and report the repository URL. Do not deploy yet.`,
+    cloudflare: `Deploy the runnable GitHub repository to Cloudflare. Review its declared bindings and auth settings, keep secrets out of source control, run the documented deploy flow, then verify the site, Admin, API, MCP, and WebMCP surfaces that the project exposes.`,
+  } satisfies Record<ShipStep, string>
 
   return (
     <div className="relative h-svh overflow-hidden bg-background text-foreground">
@@ -472,21 +506,26 @@ export default function App() {
             <Button variant="outline" size="sm" className="mt-2 w-full" disabled={!projectsReady} onClick={() => void createNewProject()}>
               <Plus /> New project
             </Button>
-            {hasProject && <div className="mt-2 border-t pt-2">
-              <p className="truncate px-1 text-xs font-medium">{projectArchiveName(currentProject.name, currentProject.id)}</p>
-              <p className="px-1 text-[11px] leading-4 text-muted-foreground">{currentProject.name} · Mantle {mantleVersion}</p>
-              <p className="px-1 text-[11px] leading-4 text-muted-foreground" title={`${runtimeSourceRevision} / ${adminSourceRevision}`}>Sources {runtimeSourceRevision.slice(0, 8)} / {adminSourceRevision.slice(0, 8)}</p>
-              <p className="px-1 text-[11px] leading-4 text-muted-foreground">Coding-agent handoff; not a ready-to-run app.</p>
-              <Button variant="outline" size="sm" className="mt-2 w-full" onClick={downloadProject}>
-                <Download /> Download project
-              </Button>
-            </div>}
             {storageError && <p className="mt-2 px-1 text-xs text-destructive">Autosave unavailable: {storageError}</p>}
-            {exportError && <p className="mt-2 px-1 text-xs text-destructive">Download failed: {exportError}</p>}
           </div>
         </details>
 
         <div className="ml-auto flex items-center gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!hasProject}
+            onClick={() => {
+              setShipStep('handoff')
+              setShipCopied(null)
+              setExportError('')
+              setShipOpen(true)
+            }}
+            aria-label="Deploy to Cloudflare"
+            title={hasProject ? 'Deploy to Cloudflare' : 'Add Manifest resources before deploying'}
+          >
+            Deploy to Cloudflare
+          </Button>
           <Button variant="ghost" size="icon-sm" onClick={toggleTheme} aria-label={darkMode ? 'Use light theme' : 'Use dark theme'} title={darkMode ? 'Use light theme' : 'Use dark theme'}>
             {darkMode ? <Sun /> : <Moon />}
           </Button>
@@ -603,6 +642,99 @@ export default function App() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        open={shipOpen}
+        onOpenChange={setShipOpen}
+      >
+        <DialogContent className="grid max-h-[calc(100svh-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-3xl">
+          <DialogHeader className="p-5 pb-4 pr-12">
+            <DialogTitle className="flex items-center gap-2 text-lg"><Rocket className="size-5 text-primary" /> Ship {currentProject.name}</DialogTitle>
+            <DialogDescription>Hand the Mantle contract to a coding agent, push the runnable project, then deploy it.</DialogDescription>
+          </DialogHeader>
+
+          <Tabs value={shipStep} onValueChange={(value) => setShipStep(value as ShipStep)} className="min-h-0 gap-0 overflow-hidden border-y">
+            <TabsList className="mx-5 mt-4 grid h-auto w-auto grid-cols-3" aria-label="Ship workflow">
+              <TabsTrigger value="handoff" className="gap-1 py-2 text-xs sm:text-sm"><span className="text-muted-foreground">1</span> Handoff</TabsTrigger>
+              <TabsTrigger value="github" className="gap-1 py-2 text-xs sm:text-sm"><span className="text-muted-foreground">2</span> GitHub</TabsTrigger>
+              <TabsTrigger value="cloudflare" className="gap-1 py-2 text-xs sm:text-sm"><span className="text-muted-foreground">3</span> Cloudflare</TabsTrigger>
+            </TabsList>
+
+            <div className="min-h-0 overflow-y-auto p-5">
+              <TabsContent value="handoff" className="m-0 space-y-4">
+                <div>
+                  <h2 className="font-semibold">Hand off to a coding agent</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">The ZIP carries the complete Manifest and pinned instructions. It is not a ready-to-run application.</p>
+                </div>
+                <div className="rounded-xl border bg-muted/40 p-4">
+                  <div className="flex items-start gap-3">
+                    <FileJson2 className="mt-0.5 size-5 shrink-0 text-primary" />
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">{archiveName}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">{currentProject.name} · Mantle {mantleVersion}</p>
+                      <p className="text-xs text-muted-foreground" title={`${runtimeSourceRevision} / ${adminSourceRevision}`}>Sources {runtimeSourceRevision.slice(0, 8)} / {adminSourceRevision.slice(0, 8)}</p>
+                    </div>
+                  </div>
+                </div>
+                <ol className="grid gap-2 text-sm text-muted-foreground">
+                  <li><strong className="text-foreground">1.</strong> Download the handoff ZIP.</li>
+                  <li><strong className="text-foreground">2.</strong> Attach it to your coding agent and paste the prompt.</li>
+                  <li><strong className="text-foreground">3.</strong> Let the agent materialize and verify a Mantle Blank project.</li>
+                </ol>
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={downloadProject}><Download /> Download handoff</Button>
+                  <Button variant="outline" onClick={() => void copyShipInstructions('handoff', shipInstructions.handoff)}>{shipCopied === 'handoff' ? <Check /> : <Copy />}{shipCopied === 'handoff' ? 'Copied' : 'Copy agent prompt'}</Button>
+                </div>
+                {exportError && <p className="text-sm text-destructive" role="alert">Download failed: {exportError}</p>}
+              </TabsContent>
+
+              <TabsContent value="github" className="m-0 space-y-4">
+                <div>
+                  <h2 className="flex items-center gap-2 font-semibold"><GitBranch className="size-5" /> Push the runnable project</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">Do this after the coding agent has materialized the Blank project and all checks pass.</p>
+                </div>
+                <ol className="grid gap-3">
+                  <li className="rounded-xl border p-4 text-sm"><strong>1. Choose ownership</strong><p className="mt-1 text-muted-foreground">Select the GitHub owner, repository name, and private or public visibility.</p></li>
+                  <li className="rounded-xl border p-4 text-sm"><strong>2. Push the application</strong><p className="mt-1 text-muted-foreground">Commit the runnable generated project—not the handoff ZIP—and keep secrets out of Git.</p></li>
+                  <li className="rounded-xl border p-4 text-sm"><strong>3. Keep the repository URL</strong><p className="mt-1 text-muted-foreground">Cloudflare will connect to this repository in the next step.</p></li>
+                </ol>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={() => void copyShipInstructions('github', shipInstructions.github)}>{shipCopied === 'github' ? <Check /> : <Copy />}{shipCopied === 'github' ? 'Copied' : 'Copy GitHub instructions'}</Button>
+                  <Button asChild variant="outline"><a href="https://github.com/new" target="_blank" rel="noreferrer"><ExternalLink /> Open GitHub</a></Button>
+                </div>
+              </TabsContent>
+
+              <TabsContent value="cloudflare" className="m-0 space-y-4">
+                <div>
+                  <h2 className="flex items-center gap-2 font-semibold"><Cloud className="size-5" /> Deploy from GitHub</h2>
+                  <p className="mt-1 text-sm text-muted-foreground">Connect the runnable repository to Cloudflare Workers & Pages.</p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {cloudflareSteps.map((step, index) => (
+                    <figure key={step.title} className="overflow-hidden rounded-xl border bg-muted/30">
+                      <div className="grid min-h-24 place-items-center border-b bg-white p-2"><img src={step.image} alt="" className="max-h-44 w-full object-contain" loading="lazy" /></div>
+                      <figcaption className="p-3 text-sm"><strong>{index + 1}. {step.title}</strong><p className="mt-1 text-xs leading-5 text-muted-foreground">{step.description}</p></figcaption>
+                    </figure>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={() => void copyShipInstructions('cloudflare', shipInstructions.cloudflare)}>{shipCopied === 'cloudflare' ? <Check /> : <Copy />}{shipCopied === 'cloudflare' ? 'Copied' : 'Copy deploy instructions'}</Button>
+                  <Button asChild variant="outline"><a href="https://dash.cloudflare.com/" target="_blank" rel="noreferrer"><ExternalLink /> Open Cloudflare</a></Button>
+                </div>
+              </TabsContent>
+            </div>
+          </Tabs>
+
+          <DialogFooter className="m-0 flex-row justify-between rounded-none px-5 py-4">
+            <Button variant="outline" disabled={shipStep === 'handoff'} onClick={() => setShipStep(shipStep === 'cloudflare' ? 'github' : 'handoff')}><ArrowLeft /> Back</Button>
+            {shipStep !== 'cloudflare' ? (
+              <Button onClick={() => setShipStep(shipStep === 'handoff' ? 'github' : 'cloudflare')}>Next <ArrowRight /></Button>
+            ) : (
+              <DialogClose asChild><Button>Done</Button></DialogClose>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <dialog
         ref={buildDialogRef}
