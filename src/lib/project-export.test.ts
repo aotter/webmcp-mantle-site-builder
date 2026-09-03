@@ -41,7 +41,8 @@ describe('project handoff ZIP', () => {
     const webMcp = files[`${root}/examples/register-webmcp.example.ts`]!
     const deploy = files[`${root}/DEPLOY.md`]!
 
-    expect(handoff).toContain(`@aotter/mantle@${mantleVersion}`)
+    expect(handoff).toContain('`@aotter/mantle`')
+    expect(handoff).toContain(`releases/tag/v${mantleVersion}`)
     expect(handoff).toContain(runtimeSourceRevision)
     expect(handoff).toContain(adminSourceRevision)
     expect(handoff).toContain('Blank')

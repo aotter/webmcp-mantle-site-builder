@@ -55,6 +55,7 @@ function safeProjectSlug(name: string, projectId: string): string {
 function handoffNote(projectName: string): string {
   const mantleRoot = `https://github.com/aotter/mantle/blob/${adminSourceRevision}`
   const runtimeRoot = `https://github.com/aotter/mantle/blob/${runtimeSourceRevision}`
+  const mantleRelease = `https://github.com/aotter/mantle/releases/tag/v${mantleVersion}`
   return `# ${projectName}: Mantle coding-agent handoff
 
 This ZIP is a coding-agent handoff, not a ready-to-run application. Its source of truth is \`manifests/site.yaml\`.
@@ -67,13 +68,13 @@ This ZIP is a coding-agent handoff, not a ready-to-run application. Its source o
 - [Mantle develop skill](${mantleRoot}/skills/develop/SKILL.md)
 - [Manifest grammar and design atoms](${mantleRoot}/docs/design-atoms.md)
 - [Four-atom model decision](${mantleRoot}/docs/adr/0001-four-atom-manifest-model.md)
-- [Mantle Blank provisioning/CLI instructions](${mantleRoot}/packages/mantle/README.md)
+- [Mantle ${mantleVersion} release and bootstrap](${mantleRelease})
 - [Mantle WebMCP documentation](${runtimeRoot}/packages/mantle-web/README.md#webmcp-opt-in)
 
 ## What to do
 
 1. Read the pinned develop skill and documentation above before editing.
-2. Use the exact \`@aotter/mantle@${mantleVersion}\` CLI. Inspect its help, then follow its version-matched Blank provisioning flow; do not select a typed starter.
+2. Open the pinned Mantle release above and follow its exact Blank bootstrap command; do not select a typed starter.
 3. Replace the Blank project's \`manifests/site.yaml\` with the file from this ZIP.
 4. Inspect the Manifest before adding code. Keep business rules in Schema, View, Procedure, and Trigger resources.
 5. Implement only consumer-owned gaps the Manifest cannot express: handler refs, frontend composition, provider configuration, and equivalent project wiring.
