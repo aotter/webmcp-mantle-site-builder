@@ -470,9 +470,9 @@ export default function App() {
   const hasProject = Object.values(summary.atoms).some((names) => names.length > 0)
   const archiveName = projectArchiveName(currentProject.name, currentProject.id)
   const shipInstructions = {
-    handoff: `Use the attached ${archiveName} handoff. Read HANDOFF.md first, follow the pinned Mantle develop skill, bootstrap the version-matched Blank project, replace manifests/site.yaml, then implement only the consumer-owned gaps. Run validation, generation, typecheck, tests, and build before reporting back.`,
+    handoff: `Use the attached ${archiveName} handoff. Read HANDOFF.md first, follow the pinned Mantle develop skill, bootstrap the version-matched Blank project, replace manifests/site.yaml, then implement only the consumer-owned gaps. Run only verification scripts declared by package.json. Follow DEPLOY.md for the default self-managed GitHub Auth setup, and never put secrets in source or chat.`,
     github: `After the runnable ${currentProject.name} project passes its checks, ask me to choose the GitHub owner, repository name, and visibility. Create that repository, commit the generated project without secrets, push it, and report the repository URL. Do not deploy yet.`,
-    cloudflare: `Deploy the runnable GitHub repository to Cloudflare. Review its declared bindings and auth settings, keep secrets out of source control, run the documented deploy flow, then verify the site, Admin, API, MCP, and WebMCP surfaces that the project exposes.`,
+    cloudflare: `Deploy the runnable GitHub repository to Cloudflare and record its HTTPS URL. Then create a GitHub OAuth App whose callback is <worker-url>/api/auth/callback/github. Set PUBLIC_ORIGIN, MANTLE_AUTH_MODE=self-managed, GITHUB_CLIENT_ID, and ADMIN_GITHUB_LOGIN as Worker variables; set GITHUB_CLIENT_SECRET and a stable BETTER_AUTH_SECRET as Worker secrets. Redeploy, sign in at <worker-url>/admin/sign-in with the configured GitHub account, and verify the site, Admin, API, MCP, and WebMCP surfaces. Follow DEPLOY.md for exact steps; never commit or paste secrets into chat.`,
   } satisfies Record<ShipStep, string>
 
   return (
@@ -718,6 +718,10 @@ export default function App() {
                       <figcaption className="p-3 text-sm"><strong>{index + 1}. {step.title}</strong><p className="mt-1 text-xs leading-5 text-muted-foreground">{step.description}</p></figcaption>
                     </figure>
                   ))}
+                </div>
+                <div className="rounded-xl border bg-muted/40 p-4 text-sm">
+                  <strong>Finish Admin access</strong>
+                  <p className="mt-1 leading-5 text-muted-foreground">After deploying, follow DEPLOY.md to create a GitHub OAuth App, add the Worker variables and secrets, then sign in at <code>/admin/sign-in</code> as the configured owner.</p>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   <Button variant="outline" onClick={() => void copyShipInstructions('cloudflare', shipInstructions.cloudflare)}>{shipCopied === 'cloudflare' ? <Check /> : <Copy />}{shipCopied === 'cloudflare' ? 'Copied' : 'Copy deploy instructions'}</Button>
