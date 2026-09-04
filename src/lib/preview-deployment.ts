@@ -28,6 +28,22 @@ export interface PreviewSeed {
   readonly status?: 'draft' | 'published'
 }
 
+export interface PreviewObservation {
+  readonly collection: string
+  readonly id?: string
+  readonly limit?: number
+}
+
+export function observePreviewEntries(entries: readonly EntryRow[], observations: readonly PreviewObservation[]): EntryRow[] {
+  const selected = new Map<string, EntryRow>()
+  for (const observation of observations) {
+    for (const entry of entries.filter(({ collection, id }) => collection === observation.collection && (!observation.id || id === observation.id)).slice(0, observation.limit ?? 100)) {
+      selected.set(`${entry.collection}:${entry.id}`, entry)
+    }
+  }
+  return [...selected.values()]
+}
+
 export async function createPreviewDeployment(
   plan: RuntimePlan,
   project: { readonly id: string; readonly name: string },

@@ -22,7 +22,12 @@ import {
   previewTools,
   startingPrompt,
 } from './builder'
-import { createPreviewDeployment, previewDeploymentDiagnostics, type PreviewDeployment } from './preview-deployment'
+import {
+  createPreviewDeployment,
+  observePreviewEntries,
+  previewDeploymentDiagnostics,
+  type PreviewDeployment,
+} from './preview-deployment'
 
 const fixtureDocument: ProjectDocument = {
   schemas: {
@@ -125,7 +130,10 @@ describe('Builder authoring contract', () => {
   })
 
   it('keeps registered tool schemas and copied prompts on the same contract', () => {
-    const schemas = Object.fromEntries(builderCapabilities.map(({ name, inputSchema }) => [name, inputSchema])) as Record<string, { required?: string[] }>
+    const schemas = Object.fromEntries(builderCapabilities.map(({ name, inputSchema }) => [name, inputSchema])) as Record<string, {
+      properties?: Record<string, unknown>
+      required?: string[]
+    }>
     expect(Object.keys(schemas)).toEqual([
       'builder_get_started',
       'builder_apply_preset',
@@ -135,6 +143,7 @@ describe('Builder authoring contract', () => {
     expect(schemas.builder_apply_preset?.required).toEqual(['projectId', 'baseRevision', 'preset', 'projectName'])
     expect(schemas.builder_apply_manifest_patch?.required).toEqual(['projectId', 'baseRevision', 'projectName', 'patch'])
     expect(schemas.builder_execute_preview?.required).toEqual(['projectId', 'baseRevision', 'actor'])
+    expect(schemas.builder_execute_preview?.properties).toHaveProperty('observe')
 
     for (const preset of presetNames) {
       const prompt = startingPrompt(preset, 'Build it.')
@@ -218,6 +227,20 @@ describe('Builder authoring contract', () => {
     expect(incompatible.compatibilityDiagnostics).toEqual([
       expect.objectContaining({ code: 'SANDBOX_INPUT_VALIDATION_FAILED', severity: 'warning' }),
     ])
+  })
+
+  it('selects canonical preview entries for before-and-after observation', () => {
+    const entries = [
+      { id: 'request-1', collection: 'requests', status: 'published' as const, version: 1, authorId: null, data: { approved: false }, createdAt: 1, updatedAt: 1 },
+      { id: 'request-2', collection: 'requests', status: 'published' as const, version: 2, authorId: 'staff-1', data: { approved: true }, createdAt: 2, updatedAt: 3 },
+      { id: 'post-1', collection: 'posts', status: 'draft' as const, version: 1, authorId: 'staff-1', data: { title: 'Draft' }, createdAt: 4, updatedAt: 4 },
+    ]
+
+    expect(observePreviewEntries(entries, [
+      { collection: 'requests', limit: 1 },
+      { collection: 'requests', id: 'request-2' },
+      { collection: 'posts', id: 'missing' },
+    ])).toEqual(entries.slice(0, 2))
   })
 
   it('reports a failed preview boot as actionable diagnostics instead of an opaque rejection', async () => {

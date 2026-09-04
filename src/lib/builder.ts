@@ -480,7 +480,7 @@ export const builderCapabilities = [
     required: ['projectId', 'baseRevision', 'projectName', 'patch'],
     additionalProperties: false,
   }),
-  publicProcedureCapability('builder_execute_preview', 'Reset or seed the persistent preview sandbox, call projected capabilities as a mock identity, and follow the result in Admin.', {
+  publicProcedureCapability('builder_execute_preview', 'Reset or seed the persistent preview sandbox, call projected capabilities as a mock identity, observe persisted entries before and after, and follow the result in Admin.', {
     type: 'object',
     properties: {
       projectId: { type: 'string', minLength: 1 },
@@ -499,6 +499,20 @@ export const builderCapabilities = [
             data: { type: 'object', additionalProperties: true },
           },
           required: ['collection', 'data'],
+          additionalProperties: false,
+        },
+      },
+      observe: {
+        type: 'array',
+        maxItems: 10,
+        items: {
+          type: 'object',
+          properties: {
+            collection: { type: 'string', minLength: 1 },
+            id: { type: 'string', minLength: 1 },
+            limit: { type: 'integer', minimum: 1, maximum: 100 },
+          },
+          required: ['collection'],
           additionalProperties: false,
         },
       },
@@ -602,9 +616,9 @@ export function proposePreset(state: ProjectState, name: PresetName, baseRevisio
 
 export function startingPrompt(type: PresetName | 'blank', brief: string) {
   if (type === 'blank') {
-    return `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first.\n2. Interview me about actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. After confirmation, choose a concise projectName and make one complete builder_apply_manifest_patch call with { projectId, baseRevision: revision, projectName, patch }.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then run builder_execute_preview with representative seed data and calls.\n\nStarting context:\n${brief.trim()}`
+    return `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first.\n2. Interview me about actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. After confirmation, choose a concise projectName and make one complete builder_apply_manifest_patch call with { projectId, baseRevision: revision, projectName, patch }.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then run builder_execute_preview with representative seed data, calls, and observed entries.\n\nStarting context:\n${brief.trim()}`
   }
-  return `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Choose a concise projectName, then call builder_apply_preset with { projectId, baseRevision: revision, preset: "${type}", projectName }. The host supplies the premade Manifest.\n3. Discuss how the preset should fit my actors, data, operations, permissions, and entry points. Summarize the proposed changes and wait for my confirmation.\n4. After confirmation, call builder_apply_manifest_patch with { projectId, baseRevision: currentRevision, projectName, patch } when changes are needed.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then run builder_execute_preview with representative seed data and calls.\n\nService brief:\n${brief.trim()}`
+  return `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Choose a concise projectName, then call builder_apply_preset with { projectId, baseRevision: revision, preset: "${type}", projectName }. The host supplies the premade Manifest.\n3. Discuss how the preset should fit my actors, data, operations, permissions, and entry points. Summarize the proposed changes and wait for my confirmation.\n4. After confirmation, call builder_apply_manifest_patch with { projectId, baseRevision: currentRevision, projectName, patch } when changes are needed.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then run builder_execute_preview with representative seed data, calls, and observed entries.\n\nService brief:\n${brief.trim()}`
 }
 
 export function previewAdminRoute(state: Pick<ProjectState, 'document' | 'plan'>, name: string, output?: unknown): string {

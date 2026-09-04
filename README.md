@@ -22,7 +22,8 @@ guess its way through visual controls, the host exposes four typed tools:
 - `builder_apply_manifest_patch` validates and compiles an RFC 6902 patch,
   rejects stale revisions, and activates only a valid result.
 - `builder_execute_preview` can reset or seed the persistent sandbox, invoke
-  projected capabilities as a mock actor, and follow the result in Admin.
+  projected capabilities as a mock actor, observe canonical entries before and
+  after mutations, and follow the result in Admin.
 
 The starting prompt asks the agent to discuss actors, data, operations,
 permissions, and HTTP, MCP, or WebMCP entry points with the user. It must

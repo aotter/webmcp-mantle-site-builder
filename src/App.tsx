@@ -68,7 +68,9 @@ import {
 } from '@/lib/project-store'
 import {
   createPreviewDeployment,
+  observePreviewEntries,
   previewDeploymentDiagnostics,
+  type PreviewObservation,
   type PreviewActor,
   type PreviewDeployment,
   type PreviewSeed,
@@ -446,8 +448,10 @@ export default function App() {
             const follow = input.follow === undefined ? true : readBoolean(input.follow, 'follow')
             const seed = readPreviewSeed(input.seed ?? [])
             const calls = readPreviewCalls(input.calls ?? [])
+            const observe = readPreviewObservations(input.observe ?? [])
             setPreviewSession({ actor, action: reset ? 'Resetting sandbox' : seed.length ? 'Seeding data' : calls[0]?.name })
             try {
+              const before = observe.length === 0 ? [] : observePreviewEntries(await loadSandboxEntries(currentProjectRef.current.id), observe)
               let deployment = previewDeploymentRef.current
               if (reset) {
                 await clearSandboxEntries(currentProjectRef.current.id)
@@ -472,6 +476,7 @@ export default function App() {
                 }
               }
               if (!follow) reloadAdminPreview()
+              const after = observe.length === 0 ? [] : observePreviewEntries(await loadSandboxEntries(currentProjectRef.current.id), observe)
               return {
                 ok: steps.every((step) => step.ok),
                 actor,
@@ -480,6 +485,7 @@ export default function App() {
                 compatibilityDiagnostics: deployment.compatibilityDiagnostics,
                 seeded: seeded.map(({ id, collection, status, data }) => ({ id, collection, status, data })),
                 steps,
+                observations: { before, after },
               }
             } finally {
               setPreviewSession({ actor })
@@ -984,6 +990,18 @@ function readPreviewCalls(value: unknown): { name: string; input: Record<string,
       throw new TypeError('Each preview call needs a name and input object.')
     }
     return { name: item.name, input: item.input }
+  })
+}
+
+function readPreviewObservations(value: unknown): PreviewObservation[] {
+  if (!Array.isArray(value) || value.length > 10) throw new TypeError('observe must contain at most 10 entry selectors.')
+  return value.map((item) => {
+    if (!isMessage(item) || typeof item.collection !== 'string' || item.collection.length === 0
+      || (item.id !== undefined && (typeof item.id !== 'string' || item.id.length === 0))
+      || (item.limit !== undefined && (!Number.isInteger(item.limit) || (item.limit as number) < 1 || (item.limit as number) > 100))) {
+      throw new TypeError('Each observation needs collection, optional id, and an optional limit from 1 to 100.')
+    }
+    return { collection: item.collection, ...(item.id ? { id: item.id as string } : {}), ...(item.limit ? { limit: item.limit as number } : {}) }
   })
 }
 
