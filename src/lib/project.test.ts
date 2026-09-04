@@ -16,8 +16,10 @@ import {
   builderCapabilities,
   getStarted,
   presetNames,
+  previewAdminRoute,
   proposePreset,
   publicTools,
+  previewTools,
   startingPrompt,
 } from './builder'
 import { createPreviewDeployment, previewDeploymentDiagnostics, type PreviewDeployment } from './preview-deployment'
@@ -109,6 +111,9 @@ describe('Builder authoring contract', () => {
 
     const procurement = accept(proposePreset(empty, 'procurement', 1))
     expect(procurement.document.triggers['review-requisition-mcp']?.spec.source).toMatchObject({ kind: 'mcp', surface: 'staff' })
+    expect(previewTools(procurement)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ownerName: 'review-requisition', surface: 'staff' }),
+    ]))
     expect(() => proposePreset(transaction, 'intake', 2)).toThrow('empty project')
   })
 
@@ -125,13 +130,11 @@ describe('Builder authoring contract', () => {
       'builder_get_started',
       'builder_apply_preset',
       'builder_apply_manifest_patch',
-      'builder_call_preview_tool',
-      'builder_run_smoke_test',
+      'builder_execute_preview',
     ])
     expect(schemas.builder_apply_preset?.required).toEqual(['projectId', 'baseRevision', 'preset', 'projectName'])
     expect(schemas.builder_apply_manifest_patch?.required).toEqual(['projectId', 'baseRevision', 'projectName', 'patch'])
-    expect(schemas.builder_call_preview_tool?.required).toEqual(['projectId', 'baseRevision', 'name', 'input'])
-    expect(schemas.builder_run_smoke_test?.required).toEqual(['projectId', 'baseRevision', 'actor', 'reset', 'seed', 'calls'])
+    expect(schemas.builder_execute_preview?.required).toEqual(['projectId', 'baseRevision', 'actor'])
 
     for (const preset of presetNames) {
       const prompt = startingPrompt(preset, 'Build it.')
@@ -141,7 +144,7 @@ describe('Builder authoring contract', () => {
       expect(prompt).toContain('baseRevision: revision')
       expect(prompt).toContain('projectName')
       expect(prompt).toContain('wait for my confirmation')
-      expect(prompt).toContain('builder_run_smoke_test')
+      expect(prompt).toContain('builder_execute_preview')
       expect(prompt).not.toMatch(/starter/i)
     }
     const blank = startingPrompt('blank', 'Build it.')
@@ -149,6 +152,14 @@ describe('Builder authoring contract', () => {
     expect(blank).toContain('{ projectId, baseRevision: revision, projectName, patch }')
     expect(blank).toContain('wait for my confirmation')
     expect(blank).not.toContain('builder_apply_preset')
+  })
+
+  it('maps preview capabilities to stable Admin routes', () => {
+    const state = accept(proposePreset(createProjectState(initialProjectDocument), 'intake', 1))
+    expect(previewAdminRoute(state, 'submit_request')).toBe('/admin/c/requests')
+    expect(previewAdminRoute(state, 'submit_request', { id: 'request/1' })).toBe('/admin/c/requests/request%2F1')
+    expect(previewAdminRoute(state, 'query_view_recent_requests')).toBe('/admin/views/recent-requests')
+    expect(previewAdminRoute(state, 'missing')).toBe('/admin/dev/docs?tab=mcp')
   })
 
   it('keeps Blank as exactly four empty atom groups', () => {

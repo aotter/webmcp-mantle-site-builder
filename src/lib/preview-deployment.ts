@@ -132,7 +132,7 @@ function sandboxCompatibilityDiagnostics(plan: RuntimePlan, entries: readonly En
         severity: 'warning' as const,
         path: `/sandbox/${entry.collection}/${entry.id}`,
         message: `Sandbox entry '${entry.id}' belongs to removed Schema '${entry.collection}'.`,
-        suggestion: 'Run builder_run_smoke_test with reset: true and seed data that matches the current Manifest.',
+        suggestion: 'Run builder_execute_preview with reset: true and seed data that matches the current Manifest.',
       }]
     }
     return validator.validate(schema, entry.data, { partial: entry.status === 'draft' }).map((diagnostic) => ({
@@ -141,7 +141,7 @@ function sandboxCompatibilityDiagnostics(plan: RuntimePlan, entries: readonly En
       severity: 'warning' as const,
       path: `/sandbox/${entry.collection}/${entry.id}${diagnostic.path}`,
       message: `Sandbox entry '${entry.id}' no longer matches Schema '${entry.collection}': ${diagnostic.message}`,
-      suggestion: 'Run builder_run_smoke_test with reset: true and seed data that matches the current Manifest.',
+      suggestion: 'Run builder_execute_preview with reset: true and seed data that matches the current Manifest.',
     }))
   })
 }

@@ -40,9 +40,14 @@
     return response
   }
 
-  window.addEventListener('message', function refreshFromHost(event) {
-    if (event.origin === location.origin && event.source === window.parent && event.data && event.data.type === 'mantle:host-api:reload') {
-      location.reload()
+  window.addEventListener('message', function updateFromHost(event) {
+    if (event.origin !== location.origin || event.source !== window.parent || !event.data) return
+    if (event.data.type === 'mantle:host-api:reload') location.reload()
+    if (event.data.type === 'mantle:host-api:navigate' && typeof event.data.path === 'string') {
+      var target = new URL(event.data.path, location.origin)
+      if (target.origin === location.origin && (target.pathname === '/admin' || target.pathname.indexOf('/admin/') === 0)) {
+        location.assign(target.pathname + target.search + target.hash)
+      }
     }
   })
 })()
