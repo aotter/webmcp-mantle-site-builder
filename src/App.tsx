@@ -1,6 +1,6 @@
 import { bindWebMcp, type WebMcpBinding } from '@aotter/mantle-web/webmcp'
 import type { Operation } from 'fast-json-patch'
-import { ArrowLeft, ArrowRight, Bot, Braces, Check, ChevronDown, Cloud, CloudOff, Copy, Download, ExternalLink, FileJson2, GitBranch, Monitor, Moon, Plus, Rocket, Smartphone, Sparkles, Sun, Trash2, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Bot, Braces, Check, ChevronDown, Cloud, Copy, Download, ExternalLink, FileJson2, GitBranch, Monitor, Moon, Plus, Rocket, Smartphone, Sparkles, Sun, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -684,9 +684,6 @@ export default function App() {
             <div className={`mx-auto flex h-full flex-col overflow-hidden rounded-2xl border border-primary/35 bg-secondary p-1.5 text-secondary-foreground shadow-2xl shadow-primary/10 transition-[width] duration-200 motion-reduce:transition-none ${previewViewport === 'mobile' ? 'w-[min(402px,100%)]' : 'w-full'}`}>
               <div className="flex h-9 shrink-0 items-center gap-2 px-2">
                 <span className="text-xs font-semibold">Preview sandbox</span>
-                <Badge variant="outline" className="border-amber-500/35 bg-amber-500/10 text-amber-800 dark:text-amber-300" aria-label="External MCP connections are available after deployment" title="External MCP connections are unavailable in the Builder sandbox">
-                  <CloudOff /> MCP connects after deploy
-                </Badge>
                 {previewSession.action && <Badge variant="outline" className="max-w-52 truncate" aria-live="polite"><Bot className="size-3 animate-pulse motion-reduce:animate-none" /> Testing as <span className="capitalize">{previewSession.actor}</span> · {previewSession.action}</Badge>}
                 <div className="ml-auto flex items-center rounded-lg bg-background/35 p-0.5" role="group" aria-label="Preview viewport">
                   <Button variant="ghost" size="sm" className={previewViewport === 'desktop' ? 'bg-background text-foreground shadow-sm hover:bg-background' : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'} aria-pressed={previewViewport === 'desktop'} onClick={() => setPreviewViewport('desktop')}>
