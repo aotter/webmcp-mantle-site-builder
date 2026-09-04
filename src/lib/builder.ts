@@ -12,7 +12,7 @@ import {
 import { publicProcedureCapability, publicViewCapability } from './webmcp'
 
 const apiVersion = 'cms.mantle.aotter.net/v1' as const
-export const mantleVersion = '0.1.0-alpha.15'
+export const mantleVersion = '0.1.0-alpha.16'
 export const runtimeSourceRevision = 'b2a6e04ff5820c121d660e6b4f5786884f002cfd'
 export const adminSourceRevision = 'b2a6e04ff5820c121d660e6b4f5786884f002cfd'
 
@@ -480,14 +480,19 @@ export const builderCapabilities = [
     required: ['projectId', 'baseRevision', 'projectName', 'patch'],
     additionalProperties: false,
   }),
-  publicProcedureCapability('builder_execute_preview', 'Reset or seed the persistent preview sandbox, call projected capabilities as a mock identity, observe persisted entries before and after, and follow the result in Admin.', {
+  publicProcedureCapability('builder_execute_preview', 'Reset or seed the persistent preview sandbox, call projected capabilities as a mock identity, observe persisted entries before and after, and optionally guide the user through the work in Admin.', {
     type: 'object',
     properties: {
       projectId: { type: 'string', minLength: 1 },
       baseRevision: { type: 'integer', minimum: 1 },
       actor: { type: 'string', enum: ['anonymous', 'member', 'owner'] },
       reset: { type: 'boolean' },
-      follow: { type: 'boolean' },
+      navigation: {
+        type: 'string',
+        enum: ['none', 'result', 'walkthrough'],
+        default: 'none',
+        description: 'Control the embedded Admin page: none keeps the user in place, result opens only the final affected page, and walkthrough guides the user through each capability contract and affected result.',
+      },
       seed: {
         type: 'array',
         maxItems: 50,
@@ -511,6 +516,7 @@ export const builderCapabilities = [
             collection: { type: 'string', minLength: 1 },
             id: { type: 'string', minLength: 1 },
             limit: { type: 'integer', minimum: 1, maximum: 100 },
+            focus: { type: 'boolean' },
           },
           required: ['collection'],
           additionalProperties: false,
@@ -595,6 +601,10 @@ export function getStarted(
       ready: preview.ready,
       appliedRevision: preview.revision,
       identity: { kind: 'mock-member', userId: 'sandbox-member', credential: 'session' },
+      navigation: {
+        modes: ['none', 'result', 'walkthrough'],
+        guidance: 'Use none while verifying the service without moving the user. Once verification succeeds, offer a guided tour. If the user wants one, use walkthrough with representative calls so they can follow each contract and affected Admin page. Preview execution does not otherwise require approval.',
+      },
       tools: previewTools(state),
       compatibilityDiagnostics: preview.compatibilityDiagnostics ?? [],
       ...(preview.diagnostics?.length
@@ -616,9 +626,23 @@ export function proposePreset(state: ProjectState, name: PresetName, baseRevisio
 
 export function startingPrompt(type: PresetName | 'blank', brief: string) {
   if (type === 'blank') {
-    return `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first.\n2. Interview me about actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. After confirmation, choose a concise projectName and make one complete builder_apply_manifest_patch call with { projectId, baseRevision: revision, projectName, patch }.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then run builder_execute_preview with representative seed data, calls, and observed entries.\n\nStarting context:\n${brief.trim()}`
+    return `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first.\n2. Interview me about actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. After confirmation, choose a concise projectName and make one complete builder_apply_manifest_patch call with { projectId, baseRevision: revision, projectName, patch }.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then run builder_execute_preview with navigation: "none", representative seed data, calls, and observed entries.\n6. Once verification succeeds, tell me the service is ready and offer a guided tour. If I want one, replay representative calls with navigation: "walkthrough"; otherwise continue without moving the Admin page.\n\nStarting context:\n${brief.trim()}`
   }
-  return `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Choose a concise projectName, then call builder_apply_preset with { projectId, baseRevision: revision, preset: "${type}", projectName }. The host supplies the premade Manifest.\n3. Discuss how the preset should fit my actors, data, operations, permissions, and entry points. Summarize the proposed changes and wait for my confirmation.\n4. After confirmation, call builder_apply_manifest_patch with { projectId, baseRevision: currentRevision, projectName, patch } when changes are needed.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then run builder_execute_preview with representative seed data, calls, and observed entries.\n\nService brief:\n${brief.trim()}`
+  return `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Choose a concise projectName, then call builder_apply_preset with { projectId, baseRevision: revision, preset: "${type}", projectName }. The host supplies the premade Manifest.\n3. Discuss how the preset should fit my actors, data, operations, permissions, and entry points. Summarize the proposed changes and wait for my confirmation.\n4. After confirmation, call builder_apply_manifest_patch with { projectId, baseRevision: currentRevision, projectName, patch } when changes are needed.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then run builder_execute_preview with navigation: "none", representative seed data, calls, and observed entries.\n6. Once verification succeeds, tell me the service is ready and offer a guided tour. If I want one, replay representative calls with navigation: "walkthrough"; otherwise continue without moving the Admin page.\n\nService brief:\n${brief.trim()}`
+}
+
+export function previewAdminContractRoute(state: Pick<ProjectState, 'plan'>, name: string): string {
+  const capability = projectCallableCapabilities(state.plan).find((item) => item.name === name)
+  if (!capability) return '/admin/dev/docs?tab=mcp'
+  const selected = capability.kind === 'view' ? `View:${capability.ownerName}` : `Trigger:${capability.trigger}`
+  const params = new URLSearchParams({ selected })
+  if (capability.kind === 'procedure') params.set('tab', 'contract')
+  return `/admin/dev/${capability.kind === 'view' ? 'model' : 'logic'}?${params}`
+}
+
+export function previewCollectionRoute(collection: string, id?: string, status?: string): string {
+  const path = `/admin/c/${encodeURIComponent(collection)}${id ? `/${encodeURIComponent(id)}` : ''}`
+  return status ? `${path}?status=${encodeURIComponent(status)}` : path
 }
 
 export function previewAdminRoute(state: Pick<ProjectState, 'document' | 'plan'>, name: string, output?: unknown): string {
@@ -626,9 +650,10 @@ export function previewAdminRoute(state: Pick<ProjectState, 'document' | 'plan'>
   if (!capability) return '/admin/dev/docs?tab=mcp'
   if (capability.kind === 'view') return `/admin/views/${encodeURIComponent(capability.ownerName)}`
   const handler = state.document.procedures[capability.ownerName]?.spec.handler
-  if (handler?.kind !== 'builtin') return '/admin/dev/logic'
+  if (handler?.kind !== 'builtin') return previewAdminContractRoute(state, name)
   const id = output && typeof output === 'object' && 'id' in output && typeof output.id === 'string' ? output.id : undefined
-  return `/admin/c/${encodeURIComponent(handler.schema)}${id ? `/${encodeURIComponent(id)}` : ''}`
+  const status = output && typeof output === 'object' && 'status' in output && typeof output.status === 'string' ? output.status : undefined
+  return previewCollectionRoute(handler.schema, id, status)
 }
 
 export function publicTools(state: Pick<ProjectState, 'plan'>) {

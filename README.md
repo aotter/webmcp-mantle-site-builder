@@ -69,7 +69,7 @@ agent to finish the consumer-owned frontend and infrastructure choices.
 ## Architecture
 
 - React 19, TypeScript, Vite, Tailwind CSS 4, and shadcn/ui
-- Mantle `0.1.0-alpha.15` Spec, Runtime, Web, Admin, and Admin UI packages
+- Mantle `0.1.0-alpha.16` Spec, Runtime, Web, Admin, and Admin UI packages
 - Cloudflare Workers Static Assets with the official Vite plugin
 - Hono-based in-browser preview runtime
 - IndexedDB project and preview-sandbox persistence
