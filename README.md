@@ -72,7 +72,7 @@ agent to finish the consumer-owned frontend and infrastructure choices.
 - Mantle `0.1.0-alpha.15` Spec, Runtime, Web, Admin, and Admin UI packages
 - Cloudflare Workers Static Assets with the official Vite plugin
 - Hono-based in-browser preview runtime
-- IndexedDB project persistence
+- IndexedDB project and preview-sandbox persistence
 - Same-origin iframe and constrained `postMessage` Admin bridge
 
 The iframe contains trusted, same-origin Mantle Admin code and is not a
@@ -99,7 +99,7 @@ npm run check
 npx wrangler deploy --dry-run
 ```
 
-`npm run check` runs lint, 22 unit tests, TypeScript compilation, the Mantle
+`npm run check` runs lint, 26 unit tests, TypeScript compilation, the Mantle
 Admin asset sync, and the production build.
 
 ## Deploy
