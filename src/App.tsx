@@ -46,7 +46,8 @@ import {
   mantleVersion,
   presetNames,
   proposePreset,
-  publicTools,
+  previewAdminRoute,
+  previewTools,
   referenceSectionNames,
   runtimeSourceRevision,
   startingPrompt,
@@ -54,15 +55,26 @@ import {
   type ReferenceSection,
 } from '@/lib/builder'
 import {
+  clearSandboxEntries,
   createProjectRecord,
   listProjects,
+  loadSandboxEntries,
   removeProject,
   saveProject,
+  saveSandboxEntries,
   selectedProjectId,
   selectProjectId,
   type ProjectRecord,
 } from '@/lib/project-store'
-import { createPreviewDeployment, previewDeploymentDiagnostics, type PreviewDeployment } from '@/lib/preview-deployment'
+import {
+  createPreviewDeployment,
+  observePreviewEntries,
+  previewDeploymentDiagnostics,
+  type PreviewObservation,
+  type PreviewActor,
+  type PreviewDeployment,
+  type PreviewSeed,
+} from '@/lib/preview-deployment'
 
 const promptPresets = [
   { name: 'intake', label: 'Intake', description: 'Request forms, lead capture, applications, support intake, and staff review queues.', starter: 'Public request intake, typed validation, HTTP/MCP entry points, and a staff review queue.', brief: 'Build a public intake flow that collects structured requests and gives staff a review queue.' },
@@ -101,6 +113,7 @@ export default function App() {
   const [previewViewport, setPreviewViewport] = useState<PreviewViewport>(() => new URLSearchParams(location.search).get('viewport') === 'mobile' ? 'mobile' : 'desktop')
   const [previewFrameError, setPreviewFrameError] = useState(false)
   const [previewFrameRetry, setPreviewFrameRetry] = useState(0)
+  const [previewSession, setPreviewSession] = useState<{ actor: PreviewActor; action?: string }>({ actor: 'member' })
   const currentProjectRef = useRef(currentProject)
   const projectRef = useRef(project)
   const adminIframeRef = useRef<HTMLIFrameElement>(null)
@@ -147,14 +160,43 @@ export default function App() {
     setDarkMode(next)
   }
 
-  const prepareProject = useCallback(async (record: ProjectRecord) => {
-    const state = createProjectState(record.manifest)
-    const deployment = await createPreviewDeployment(state.plan, { id: record.id, name: record.name }, location.origin)
-    publicTools(state)
-    return { record, state, deployment }
+  const reloadAdminPreview = useCallback(() => {
+    adminIframeRef.current?.contentWindow?.postMessage({ type: 'mantle:host-api:reload' }, location.origin)
   }, [])
 
+  const navigateAdminPreview = useCallback((path: string) => {
+    const iframe = adminIframeRef.current
+    if (!iframe?.contentWindow) return Promise.resolve()
+    return new Promise<void>((resolve) => {
+      let timeout = 0
+      const done = () => {
+        iframe.removeEventListener('load', done)
+        window.clearTimeout(timeout)
+        resolve()
+      }
+      iframe.addEventListener('load', done)
+      timeout = window.setTimeout(done, 3000)
+      iframe.contentWindow?.postMessage({ type: 'mantle:host-api:navigate', path }, location.origin)
+    })
+  }, [])
+
+  const createSandboxDeployment = useCallback(async (
+    plan: ProjectState['plan'],
+    target: Pick<ProjectRecord, 'id' | 'name'>,
+  ) => createPreviewDeployment(plan, target, location.origin, {
+    entries: await loadSandboxEntries(target.id),
+    persistEntries: (entries) => saveSandboxEntries(target.id, entries),
+  }), [])
+
+  const prepareProject = useCallback(async (record: ProjectRecord) => {
+    const state = createProjectState(record.manifest)
+    const deployment = await createSandboxDeployment(state.plan, record)
+    previewTools(state)
+    return { record, state, deployment }
+  }, [createSandboxDeployment])
+
   const installProject = useCallback((record: ProjectRecord, state: ProjectState, deployment: PreviewDeployment) => {
+    const reload = currentProjectRef.current.id === record.id && projectRef.current.revision !== state.revision
     currentProjectRef.current = record
     projectRef.current = state
     previewDeploymentRef.current = deployment
@@ -162,7 +204,8 @@ export default function App() {
     setProject(state)
     setPreviewFrameError(false)
     selectProjectId(record.id)
-  }, [])
+    if (reload) queueMicrotask(reloadAdminPreview)
+  }, [reloadAdminPreview])
 
   const openProject = useCallback(async (record: ProjectRecord) => {
     try {
@@ -244,8 +287,8 @@ export default function App() {
     // A compiled Manifest can still fail to boot. Prove the preview first, then persist.
     let deployment: PreviewDeployment
     try {
-      deployment = await createPreviewDeployment(state.plan, { id: target.id, name: projectName }, location.origin)
-      publicTools(state)
+      deployment = await createSandboxDeployment(state.plan, { id: target.id, name: projectName })
+      previewTools(state)
     } catch (error) {
       return {
         valid: true,
@@ -275,9 +318,10 @@ export default function App() {
       project: { id: record.id, name: record.name },
       document: state.document,
       manifestYaml: projectDocumentYaml(state.document),
-      previewTools: publicTools(state),
+      previewTools: previewTools(state),
+      sandboxCompatibilityDiagnostics: deployment.compatibilityDiagnostics,
     }
-  }, [installProject, persistProject])
+  }, [createSandboxDeployment, installProject, persistProject])
 
   const commitPatch = useCallback((baseRevision: number, patch: readonly Operation[], projectName: string) => (
     commitCandidate(applyProjectPatch(projectRef.current, baseRevision, patch), projectName)
@@ -326,12 +370,6 @@ export default function App() {
     }
   }, [closeMenus, installProject, prepareProject, projects])
 
-  const invokePreviewTool = useCallback(async (name: string, input: Record<string, unknown>, signal?: AbortSignal) => {
-    const deployment = previewDeploymentRef.current
-    if (!deployment) throw new Error('Sandbox runtime is not ready.')
-    return deployment.invoke(name, input, signal)
-  }, [])
-
   useEffect(() => {
     const onMessage = async (event: MessageEvent) => {
       if (!isTrustedAdminSource(event, adminIframeRef.current?.contentWindow ?? null, location.origin)) return
@@ -340,10 +378,7 @@ export default function App() {
       try {
         const deployment = previewDeploymentRef.current
         if (!deployment) throw new Error('Sandbox runtime is not ready.')
-        const request = readHostApiRequest(event.data, {
-          projectId: currentProjectRef.current.id,
-          revision: projectRef.current.revision,
-        }, location.origin)
+        const request = readHostApiRequest(event.data, location.origin)
         const response = await deployment.fetch(request)
         const body = await response.arrayBuffer()
         port.postMessage({ ok: true, status: response.status, headers: [...response.headers], body }, [body])
@@ -383,6 +418,7 @@ export default function App() {
               ready: bootError === null,
               revision: projectRef.current.revision,
               ...(bootError === null ? {} : { diagnostics: previewDeploymentDiagnostics(bootError) }),
+              ...(deployment ? { compatibilityDiagnostics: deployment.compatibilityDiagnostics } : {}),
             },
             { id: currentProjectRef.current.id, name: currentProjectRef.current.name },
             reference,
@@ -404,10 +440,57 @@ export default function App() {
             return commitPatch(input.baseRevision, readPatch(input.patch), projectName)
           })
         }
-        if (capability.name === 'builder_call_preview_tool') {
-          assertActiveTarget({ id: currentProjectRef.current.id, revision: projectRef.current.revision }, input)
-          if (typeof input.name !== 'string' || !isMessage(input.input)) throw new TypeError('Preview tool name and input are required.')
-          return invokePreviewTool(input.name, input.input, signal)
+        if (capability.name === 'builder_execute_preview') {
+          return serializeMutation(async () => {
+            assertActiveTarget({ id: currentProjectRef.current.id, revision: projectRef.current.revision }, input)
+            const actor = readPreviewActor(input.actor)
+            const reset = input.reset === undefined ? false : readBoolean(input.reset, 'reset')
+            const follow = input.follow === undefined ? true : readBoolean(input.follow, 'follow')
+            const seed = readPreviewSeed(input.seed ?? [])
+            const calls = readPreviewCalls(input.calls ?? [])
+            const observe = readPreviewObservations(input.observe ?? [])
+            setPreviewSession({ actor, action: reset ? 'Resetting sandbox' : seed.length ? 'Seeding data' : calls[0]?.name })
+            try {
+              const before = observe.length === 0 ? [] : observePreviewEntries(await loadSandboxEntries(currentProjectRef.current.id), observe)
+              let deployment = previewDeploymentRef.current
+              if (reset) {
+                await clearSandboxEntries(currentProjectRef.current.id)
+                deployment = await createSandboxDeployment(projectRef.current.plan, currentProjectRef.current)
+                previewDeploymentRef.current = deployment
+              }
+              if (!deployment) throw new Error('Sandbox runtime is not ready.')
+              const seeded = await deployment.seed(seed)
+              if (follow && seed.length > 0) await navigateAdminPreview(`/admin/c/${encodeURIComponent(seed.at(-1)!.collection)}`)
+              const steps = []
+              for (const call of calls) {
+                signal?.throwIfAborted()
+                setPreviewSession({ actor, action: call.name })
+                const route = previewAdminRoute(projectRef.current, call.name)
+                if (follow) await navigateAdminPreview(route)
+                try {
+                  const output = await deployment.invoke(call.name, call.input, signal, actor)
+                  steps.push({ name: call.name, ok: true as const, output })
+                  if (follow) await navigateAdminPreview(previewAdminRoute(projectRef.current, call.name, output))
+                } catch (error) {
+                  steps.push({ name: call.name, ok: false as const, error: messageOf(error) })
+                }
+              }
+              if (!follow) reloadAdminPreview()
+              const after = observe.length === 0 ? [] : observePreviewEntries(await loadSandboxEntries(currentProjectRef.current.id), observe)
+              return {
+                ok: steps.every((step) => step.ok),
+                actor,
+                reset,
+                follow,
+                compatibilityDiagnostics: deployment.compatibilityDiagnostics,
+                seeded: seeded.map(({ id, collection, status, data }) => ({ id, collection, status, data })),
+                steps,
+                observations: { before, after },
+              }
+            } finally {
+              setPreviewSession({ actor })
+            }
+          })
         }
         throw new Error(`Unknown builder tool '${capability.name}'.`)
       },
@@ -420,7 +503,7 @@ export default function App() {
       disposed = true
       binding?.dispose()
     }
-  }, [commitCandidate, commitPatch, invokePreviewTool, projectsReady, serializeMutation])
+  }, [commitCandidate, commitPatch, createSandboxDeployment, navigateAdminPreview, projectsReady, reloadAdminPreview, serializeMutation])
 
   const copyStartingPrompt = async () => {
     try {
@@ -585,7 +668,8 @@ export default function App() {
             <div className={`mx-auto flex h-full flex-col overflow-hidden rounded-2xl border border-primary/35 bg-secondary p-1.5 text-secondary-foreground shadow-2xl shadow-primary/10 transition-[width] duration-200 motion-reduce:transition-none ${previewViewport === 'mobile' ? 'w-[min(402px,100%)]' : 'w-full'}`}>
               <div className="flex h-9 shrink-0 items-center gap-2 px-2">
                 <span className="text-xs font-semibold">Preview</span>
-                <span className="text-xs text-muted-foreground">Admin</span>
+                <span className="text-xs text-muted-foreground">Admin · Acting as {previewSession.actor}</span>
+                {previewSession.action && <Badge variant="outline" className="max-w-48 truncate" aria-live="polite"><Bot className="size-3 animate-pulse motion-reduce:animate-none" /> {previewSession.action}</Badge>}
                 <div className="ml-auto flex items-center rounded-lg bg-background/35 p-0.5" role="group" aria-label="Preview viewport">
                   <Button variant="ghost" size="sm" className={previewViewport === 'desktop' ? 'bg-background text-foreground shadow-sm hover:bg-background' : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'} aria-pressed={previewViewport === 'desktop'} onClick={() => setPreviewViewport('desktop')}>
                   <Monitor /> <span className="hidden sm:inline">Desktop</span>
@@ -597,9 +681,9 @@ export default function App() {
               </div>
               <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl bg-background">
                 <iframe
-                  key={`${currentProject.id}:${project.revision}:${previewFrameRetry}`}
+                  key={`${currentProject.id}:${previewFrameRetry}`}
                   ref={adminIframeRef}
-                  src={`/_mantle/admin/index.html?builderProjectId=${encodeURIComponent(currentProject.id)}&builderRevision=${project.revision}`}
+                  src="/_mantle/admin/index.html"
                   title="Mantle Admin preview"
                   className="absolute inset-0 h-full w-full border-0 bg-background"
                   onLoad={() => setPreviewFrameError(false)}
@@ -881,4 +965,47 @@ function readProjectName(value: unknown): string {
   const name = value.trim()
   if (name.length === 0 || name.length > 80) throw new TypeError('projectName must be between 1 and 80 characters.')
   return name
+}
+
+function readPreviewActor(value: unknown): PreviewActor {
+  if (value === 'anonymous' || value === 'member' || value === 'owner') return value
+  throw new TypeError('actor must be anonymous, member, or owner.')
+}
+
+function readPreviewSeed(value: unknown): PreviewSeed[] {
+  if (!Array.isArray(value) || value.length > 50) throw new TypeError('seed must contain at most 50 records.')
+  return value.map((item) => {
+    if (!isMessage(item) || typeof item.collection !== 'string' || !isMessage(item.data)
+      || (item.status !== undefined && item.status !== 'draft' && item.status !== 'published')) {
+      throw new TypeError('Each seed record needs collection, data, and optional draft or published status.')
+    }
+    return { collection: item.collection, data: item.data, ...(item.status ? { status: item.status } : {}) }
+  })
+}
+
+function readPreviewCalls(value: unknown): { name: string; input: Record<string, unknown> }[] {
+  if (!Array.isArray(value) || value.length > 50) throw new TypeError('calls must contain at most 50 tool calls.')
+  return value.map((item) => {
+    if (!isMessage(item) || typeof item.name !== 'string' || !isMessage(item.input)) {
+      throw new TypeError('Each preview call needs a name and input object.')
+    }
+    return { name: item.name, input: item.input }
+  })
+}
+
+function readPreviewObservations(value: unknown): PreviewObservation[] {
+  if (!Array.isArray(value) || value.length > 10) throw new TypeError('observe must contain at most 10 entry selectors.')
+  return value.map((item) => {
+    if (!isMessage(item) || typeof item.collection !== 'string' || item.collection.length === 0
+      || (item.id !== undefined && (typeof item.id !== 'string' || item.id.length === 0))
+      || (item.limit !== undefined && (!Number.isInteger(item.limit) || (item.limit as number) < 1 || (item.limit as number) > 100))) {
+      throw new TypeError('Each observation needs collection, optional id, and an optional limit from 1 to 100.')
+    }
+    return { collection: item.collection, ...(item.id ? { id: item.id as string } : {}), ...(item.limit ? { limit: item.limit as number } : {}) }
+  })
+}
+
+function readBoolean(value: unknown, name: string): boolean {
+  if (typeof value !== 'boolean') throw new TypeError(`${name} must be a boolean.`)
+  return value
 }

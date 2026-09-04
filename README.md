@@ -21,8 +21,9 @@ guess its way through visual controls, the host exposes four typed tools:
   procurement Manifest into an empty project.
 - `builder_apply_manifest_patch` validates and compiles an RFC 6902 patch,
   rejects stale revisions, and activates only a valid result.
-- `builder_call_preview_tool` invokes a public capability projected by the
-  service the agent just built.
+- `builder_execute_preview` can reset or seed the persistent sandbox, invoke
+  projected capabilities as a mock actor, observe canonical entries before and
+  after mutations, and follow the result in Admin.
 
 The starting prompt asks the agent to discuss actors, data, operations,
 permissions, and HTTP, MCP, or WebMCP entry points with the user. It must
@@ -37,15 +38,17 @@ project.
 4. The host compiles the candidate and keeps the last valid revision active.
 5. Mantle Admin immediately visualizes the resulting data model, logic,
    interfaces, and operational UI.
-6. The agent invokes a projected preview tool to verify the workflow.
+6. The agent executes the preview as an anonymous visitor, member, or owner;
+   the embedded Admin follows the affected View, collection, or record.
 7. The user downloads a coding-agent handoff for the remaining frontend,
    authentication, provider configuration, and deployment work.
 
 ## What is persisted
 
 The Builder stores only project identity, name, Manifest, and update time in
-browser IndexedDB. Preview records use an in-memory Mantle adapter and are not
-production data. Multiple projects can be switched or deleted independently.
+browser IndexedDB. Preview records use a persistent sandbox backed by the same
+browser database and are not production data. Multiple projects can be
+switched or deleted independently.
 
 The Admin iframe runs a mock identity and environment supplied by the host. It
 is a functional service preview, not a production authentication boundary.

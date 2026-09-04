@@ -16,11 +16,18 @@ import {
   builderCapabilities,
   getStarted,
   presetNames,
+  previewAdminRoute,
   proposePreset,
   publicTools,
+  previewTools,
   startingPrompt,
 } from './builder'
-import { createPreviewDeployment, previewDeploymentDiagnostics } from './preview-deployment'
+import {
+  createPreviewDeployment,
+  observePreviewEntries,
+  previewDeploymentDiagnostics,
+  type PreviewDeployment,
+} from './preview-deployment'
 
 const fixtureDocument: ProjectDocument = {
   schemas: {
@@ -109,6 +116,9 @@ describe('Builder authoring contract', () => {
 
     const procurement = accept(proposePreset(empty, 'procurement', 1))
     expect(procurement.document.triggers['review-requisition-mcp']?.spec.source).toMatchObject({ kind: 'mcp', surface: 'staff' })
+    expect(previewTools(procurement)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ownerName: 'review-requisition', surface: 'staff' }),
+    ]))
     expect(() => proposePreset(transaction, 'intake', 2)).toThrow('empty project')
   })
 
@@ -120,16 +130,20 @@ describe('Builder authoring contract', () => {
   })
 
   it('keeps registered tool schemas and copied prompts on the same contract', () => {
-    const schemas = Object.fromEntries(builderCapabilities.map(({ name, inputSchema }) => [name, inputSchema])) as Record<string, { required?: string[] }>
+    const schemas = Object.fromEntries(builderCapabilities.map(({ name, inputSchema }) => [name, inputSchema])) as Record<string, {
+      properties?: Record<string, unknown>
+      required?: string[]
+    }>
     expect(Object.keys(schemas)).toEqual([
       'builder_get_started',
       'builder_apply_preset',
       'builder_apply_manifest_patch',
-      'builder_call_preview_tool',
+      'builder_execute_preview',
     ])
     expect(schemas.builder_apply_preset?.required).toEqual(['projectId', 'baseRevision', 'preset', 'projectName'])
     expect(schemas.builder_apply_manifest_patch?.required).toEqual(['projectId', 'baseRevision', 'projectName', 'patch'])
-    expect(schemas.builder_call_preview_tool?.required).toEqual(['projectId', 'baseRevision', 'name', 'input'])
+    expect(schemas.builder_execute_preview?.required).toEqual(['projectId', 'baseRevision', 'actor'])
+    expect(schemas.builder_execute_preview?.properties).toHaveProperty('observe')
 
     for (const preset of presetNames) {
       const prompt = startingPrompt(preset, 'Build it.')
@@ -139,6 +153,7 @@ describe('Builder authoring contract', () => {
       expect(prompt).toContain('baseRevision: revision')
       expect(prompt).toContain('projectName')
       expect(prompt).toContain('wait for my confirmation')
+      expect(prompt).toContain('builder_execute_preview')
       expect(prompt).not.toMatch(/starter/i)
     }
     const blank = startingPrompt('blank', 'Build it.')
@@ -146,6 +161,14 @@ describe('Builder authoring contract', () => {
     expect(blank).toContain('{ projectId, baseRevision: revision, projectName, patch }')
     expect(blank).toContain('wait for my confirmation')
     expect(blank).not.toContain('builder_apply_preset')
+  })
+
+  it('maps preview capabilities to stable Admin routes', () => {
+    const state = accept(proposePreset(createProjectState(initialProjectDocument), 'intake', 1))
+    expect(previewAdminRoute(state, 'submit_request')).toBe('/admin/c/requests')
+    expect(previewAdminRoute(state, 'submit_request', { id: 'request/1' })).toBe('/admin/c/requests/request%2F1')
+    expect(previewAdminRoute(state, 'query_view_recent_requests')).toBe('/admin/views/recent-requests')
+    expect(previewAdminRoute(state, 'missing')).toBe('/admin/dev/docs?tab=mcp')
   })
 
   it('keeps Blank as exactly four empty atom groups', () => {
@@ -171,6 +194,53 @@ describe('Builder authoring contract', () => {
     const queue = await deployment.fetch(new Request('https://builder.test/admin/api/views/recent-requests'))
     expect(queue.status).toBe(200)
     await expect(queue.json()).resolves.toMatchObject({ data: { rows: [expect.objectContaining({ name: 'Ada' })] } })
+  })
+
+  it('persists seeded sandbox data across preview deployments', async () => {
+    const state = createProjectState(fixtureDocument)
+    let entries = [] as Awaited<ReturnType<PreviewDeployment['seed']>>
+    const storage = () => ({
+      entries,
+      persistEntries: async (next: typeof entries) => { entries = structuredClone(next) },
+    })
+    const first = await createPreviewDeployment(state.plan, { id: 'test', name: 'Catalog' }, 'https://builder.test', storage())
+    await first.seed([{ collection: 'items', status: 'published', data: { name: 'Seeded' } }])
+
+    const second = await createPreviewDeployment(state.plan, { id: 'test', name: 'Catalog' }, 'https://builder.test', storage())
+    await expect(second.invoke('query_view_items', {}, undefined, 'anonymous')).resolves.toMatchObject({
+      rows: [expect.objectContaining({ status: 'published' })],
+    })
+
+    const changed = structuredClone(fixtureDocument)
+    changed.schemas.items = {
+      ...changed.schemas.items!,
+      spec: {
+        ...changed.schemas.items!.spec,
+        schema: {
+          type: 'object',
+          properties: { name: { type: 'integer' } },
+          required: ['name'],
+        },
+      },
+    }
+    const incompatible = await createPreviewDeployment(createProjectState(changed).plan, { id: 'test', name: 'Catalog' }, 'https://builder.test', storage())
+    expect(incompatible.compatibilityDiagnostics).toEqual([
+      expect.objectContaining({ code: 'SANDBOX_INPUT_VALIDATION_FAILED', severity: 'warning' }),
+    ])
+  })
+
+  it('selects canonical preview entries for before-and-after observation', () => {
+    const entries = [
+      { id: 'request-1', collection: 'requests', status: 'published' as const, version: 1, authorId: null, data: { approved: false }, createdAt: 1, updatedAt: 1 },
+      { id: 'request-2', collection: 'requests', status: 'published' as const, version: 2, authorId: 'staff-1', data: { approved: true }, createdAt: 2, updatedAt: 3 },
+      { id: 'post-1', collection: 'posts', status: 'draft' as const, version: 1, authorId: 'staff-1', data: { title: 'Draft' }, createdAt: 4, updatedAt: 4 },
+    ]
+
+    expect(observePreviewEntries(entries, [
+      { collection: 'requests', limit: 1 },
+      { collection: 'requests', id: 'request-2' },
+      { collection: 'posts', id: 'missing' },
+    ])).toEqual(entries.slice(0, 2))
   })
 
   it('reports a failed preview boot as actionable diagnostics instead of an opaque rejection', async () => {

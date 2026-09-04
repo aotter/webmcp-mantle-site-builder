@@ -1,4 +1,5 @@
 import { initialProjectDocument, type ProjectDocument } from './project'
+import type { EntryRow } from '@aotter/mantle-runtime'
 
 export interface ProjectRecord {
   id: string
@@ -8,7 +9,8 @@ export interface ProjectRecord {
 }
 
 const databaseName = 'webmcp-mantle-site-builder'
-const storeName = 'projects'
+const projectStoreName = 'projects'
+const sandboxStoreName = 'sandboxData'
 const selectedProjectKey = 'mantle-builder-project'
 let connection: Promise<IDBDatabase> | undefined
 
@@ -23,7 +25,7 @@ export function createProjectRecord(): ProjectRecord {
 
 export async function listProjects(): Promise<ProjectRecord[]> {
   const database = await openDatabase()
-  const records = await request(database.transaction(storeName).objectStore(storeName).getAll()) as unknown[]
+  const records = await request(database.transaction(projectStoreName).objectStore(projectStoreName).getAll()) as unknown[]
   return readProjectRecords(records)
 }
 
@@ -50,19 +52,40 @@ export function readProjectRecords(values: readonly unknown[]): ProjectRecord[] 
 
 export async function saveProject(project: ProjectRecord): Promise<void> {
   const database = await openDatabase()
-  const transaction = database.transaction(storeName, 'readwrite')
-  transaction.objectStore(storeName).put(project)
+  const transaction = database.transaction(projectStoreName, 'readwrite')
+  transaction.objectStore(projectStoreName).put(project)
+  await transactionDone(transaction)
+}
+
+export async function loadSandboxEntries(projectId: string): Promise<EntryRow[]> {
+  const database = await openDatabase()
+  const record = await request(database.transaction(sandboxStoreName).objectStore(sandboxStoreName).get(projectId)) as { entries?: unknown } | undefined
+  return Array.isArray(record?.entries) ? record.entries.flatMap(readSandboxEntry) : []
+}
+
+export async function saveSandboxEntries(projectId: string, entries: readonly EntryRow[]): Promise<void> {
+  const database = await openDatabase()
+  const transaction = database.transaction(sandboxStoreName, 'readwrite')
+  transaction.objectStore(sandboxStoreName).put({ projectId, entries: structuredClone(entries), updatedAt: Date.now() })
+  await transactionDone(transaction)
+}
+
+export async function clearSandboxEntries(projectId: string): Promise<void> {
+  const database = await openDatabase()
+  const transaction = database.transaction(sandboxStoreName, 'readwrite')
+  transaction.objectStore(sandboxStoreName).delete(projectId)
   await transactionDone(transaction)
 }
 
 export async function removeProject(id: string, replacement?: ProjectRecord): Promise<void> {
   const database = await openDatabase()
-  const transaction = database.transaction(storeName, 'readwrite')
+  const transaction = database.transaction([projectStoreName, sandboxStoreName], 'readwrite')
   const done = transactionDone(transaction)
   try {
-    const store = transaction.objectStore(storeName)
+    const store = transaction.objectStore(projectStoreName)
     store.delete(id)
     if (replacement) store.put(replacement)
+    transaction.objectStore(sandboxStoreName).delete(id)
     await done
   } catch (error) {
     try { transaction.abort() } catch { /* Transaction already finished. */ }
@@ -82,8 +105,11 @@ export function selectProjectId(id: string): void {
 function openDatabase(): Promise<IDBDatabase> {
   if (connection) return connection
   connection = new Promise<IDBDatabase>((resolve, reject) => {
-    const opening = indexedDB.open(databaseName, 1)
-    opening.onupgradeneeded = () => opening.result.createObjectStore(storeName, { keyPath: 'id' })
+    const opening = indexedDB.open(databaseName, 2)
+    opening.onupgradeneeded = () => {
+      if (!opening.result.objectStoreNames.contains(projectStoreName)) opening.result.createObjectStore(projectStoreName, { keyPath: 'id' })
+      if (!opening.result.objectStoreNames.contains(sandboxStoreName)) opening.result.createObjectStore(sandboxStoreName, { keyPath: 'projectId' })
+    }
     opening.onsuccess = () => resolve(opening.result)
     opening.onerror = () => reject(opening.error)
     opening.onblocked = () => reject(new Error('IndexedDB upgrade is blocked by another tab.'))
@@ -99,6 +125,20 @@ function request<T>(value: IDBRequest<T>): Promise<T> {
     value.onsuccess = () => resolve(value.result)
     value.onerror = () => reject(value.error)
   })
+}
+
+function readSandboxEntry(value: unknown): EntryRow[] {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return []
+  const row = value as Partial<EntryRow>
+  if (typeof row.id !== 'string' || typeof row.collection !== 'string'
+    || (row.status !== 'draft' && row.status !== 'published' && row.status !== 'archived')
+    || typeof row.version !== 'number' || !Number.isFinite(row.version)
+    || row.data === null || typeof row.data !== 'object' || Array.isArray(row.data)
+    || (row.authorId !== null && typeof row.authorId !== 'string')
+    || typeof row.createdAt !== 'number' || !Number.isFinite(row.createdAt)
+    || typeof row.updatedAt !== 'number' || !Number.isFinite(row.updatedAt)
+    || (row.locale !== undefined && typeof row.locale !== 'string')) return []
+  return [structuredClone(row) as EntryRow]
 }
 
 function transactionDone(transaction: IDBTransaction): Promise<void> {

@@ -480,22 +480,64 @@ export const builderCapabilities = [
     required: ['projectId', 'baseRevision', 'projectName', 'patch'],
     additionalProperties: false,
   }),
-  publicProcedureCapability('builder_call_preview_tool', 'Call a projected public capability in the active site preview.', {
+  publicProcedureCapability('builder_execute_preview', 'Reset or seed the persistent preview sandbox, call projected capabilities as a mock identity, observe persisted entries before and after, and follow the result in Admin.', {
     type: 'object',
     properties: {
       projectId: { type: 'string', minLength: 1 },
       baseRevision: { type: 'integer', minimum: 1 },
-      name: { type: 'string' },
-      input: { type: 'object', additionalProperties: true },
+      actor: { type: 'string', enum: ['anonymous', 'member', 'owner'] },
+      reset: { type: 'boolean' },
+      follow: { type: 'boolean' },
+      seed: {
+        type: 'array',
+        maxItems: 50,
+        items: {
+          type: 'object',
+          properties: {
+            collection: { type: 'string', minLength: 1 },
+            status: { type: 'string', enum: ['draft', 'published'] },
+            data: { type: 'object', additionalProperties: true },
+          },
+          required: ['collection', 'data'],
+          additionalProperties: false,
+        },
+      },
+      observe: {
+        type: 'array',
+        maxItems: 10,
+        items: {
+          type: 'object',
+          properties: {
+            collection: { type: 'string', minLength: 1 },
+            id: { type: 'string', minLength: 1 },
+            limit: { type: 'integer', minimum: 1, maximum: 100 },
+          },
+          required: ['collection'],
+          additionalProperties: false,
+        },
+      },
+      calls: {
+        type: 'array',
+        maxItems: 50,
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', minLength: 1 },
+            input: { type: 'object', additionalProperties: true },
+          },
+          required: ['name', 'input'],
+          additionalProperties: false,
+        },
+      },
     },
-    required: ['projectId', 'baseRevision', 'name', 'input'],
+    required: ['projectId', 'baseRevision', 'actor'],
     additionalProperties: false,
   }),
 ]
 
 export function getStarted(
   state: ProjectState,
-  preview: { ready: boolean; revision: number; diagnostics?: BuilderDiagnostic[] },
+  preview: { ready: boolean; revision: number; diagnostics?: BuilderDiagnostic[]; compatibilityDiagnostics?: readonly BuilderDiagnostic[] },
   project = { id: '', name: 'Untitled project' },
   reference?: { section: ReferenceSection; content: string },
 ) {
@@ -546,14 +588,15 @@ export function getStarted(
       preset: { name: 'builder_apply_preset', required: ['projectId', 'baseRevision', 'preset', 'projectName'] },
       blank: { name: 'builder_apply_manifest_patch', required: ['projectId', 'baseRevision', 'projectName', 'patch'] },
       patch: { name: 'builder_apply_manifest_patch', required: ['projectId', 'baseRevision', 'projectName', 'patch'] },
-      preview: { name: 'builder_call_preview_tool', required: ['projectId', 'baseRevision', 'name', 'input'] },
+      execute: { name: 'builder_execute_preview', required: ['projectId', 'baseRevision', 'actor'] },
     },
     project: { ...project, ...projectStateSummary(state), document: state.document },
     preview: {
       ready: preview.ready,
       appliedRevision: preview.revision,
       identity: { kind: 'mock-member', userId: 'sandbox-member', credential: 'session' },
-      tools: publicTools(state),
+      tools: previewTools(state),
+      compatibilityDiagnostics: preview.compatibilityDiagnostics ?? [],
       ...(preview.diagnostics?.length
         ? { error: preview.diagnostics[0]!.message, diagnostics: preview.diagnostics }
         : {}),
@@ -573,9 +616,19 @@ export function proposePreset(state: ProjectState, name: PresetName, baseRevisio
 
 export function startingPrompt(type: PresetName | 'blank', brief: string) {
   if (type === 'blank') {
-    return `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first.\n2. Interview me about actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. After confirmation, choose a concise projectName and make one complete builder_apply_manifest_patch call with { projectId, baseRevision: revision, projectName, patch }.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then test a projected public capability with builder_call_preview_tool using { projectId, baseRevision: currentRevision, name, input }.\n\nStarting context:\n${brief.trim()}`
+    return `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first.\n2. Interview me about actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. After confirmation, choose a concise projectName and make one complete builder_apply_manifest_patch call with { projectId, baseRevision: revision, projectName, patch }.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then run builder_execute_preview with representative seed data, calls, and observed entries.\n\nStarting context:\n${brief.trim()}`
   }
-  return `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Choose a concise projectName, then call builder_apply_preset with { projectId, baseRevision: revision, preset: "${type}", projectName }. The host supplies the premade Manifest.\n3. Discuss how the preset should fit my actors, data, operations, permissions, and entry points. Summarize the proposed changes and wait for my confirmation.\n4. After confirmation, call builder_apply_manifest_patch with { projectId, baseRevision: currentRevision, projectName, patch } when changes are needed.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then test a projected public capability with builder_call_preview_tool using { projectId, baseRevision: currentRevision, name, input }.\n\nService brief:\n${brief.trim()}`
+  return `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Choose a concise projectName, then call builder_apply_preset with { projectId, baseRevision: revision, preset: "${type}", projectName }. The host supplies the premade Manifest.\n3. Discuss how the preset should fit my actors, data, operations, permissions, and entry points. Summarize the proposed changes and wait for my confirmation.\n4. After confirmation, call builder_apply_manifest_patch with { projectId, baseRevision: currentRevision, projectName, patch } when changes are needed.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then run builder_execute_preview with representative seed data, calls, and observed entries.\n\nService brief:\n${brief.trim()}`
+}
+
+export function previewAdminRoute(state: Pick<ProjectState, 'document' | 'plan'>, name: string, output?: unknown): string {
+  const capability = projectCallableCapabilities(state.plan).find((item) => item.name === name)
+  if (!capability) return '/admin/dev/docs?tab=mcp'
+  if (capability.kind === 'view') return `/admin/views/${encodeURIComponent(capability.ownerName)}`
+  const handler = state.document.procedures[capability.ownerName]?.spec.handler
+  if (handler?.kind !== 'builtin') return '/admin/dev/logic'
+  const id = output && typeof output === 'object' && 'id' in output && typeof output.id === 'string' ? output.id : undefined
+  return `/admin/c/${encodeURIComponent(handler.schema)}${id ? `/${encodeURIComponent(id)}` : ''}`
 }
 
 export function publicTools(state: Pick<ProjectState, 'plan'>) {
@@ -583,6 +636,17 @@ export function publicTools(state: Pick<ProjectState, 'plan'>) {
     name,
     kind,
     ownerName,
+    description,
+    inputSchema,
+  }))
+}
+
+export function previewTools(state: Pick<ProjectState, 'plan'>) {
+  return projectCallableCapabilities(state.plan).map(({ name, kind, ownerName, surface, description, inputSchema }) => ({
+    name,
+    kind,
+    ownerName,
+    surface,
     description,
     inputSchema,
   }))
