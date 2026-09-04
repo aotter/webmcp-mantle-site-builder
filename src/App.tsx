@@ -54,15 +54,24 @@ import {
   type ReferenceSection,
 } from '@/lib/builder'
 import {
+  clearSandboxEntries,
   createProjectRecord,
   listProjects,
+  loadSandboxEntries,
   removeProject,
   saveProject,
+  saveSandboxEntries,
   selectedProjectId,
   selectProjectId,
   type ProjectRecord,
 } from '@/lib/project-store'
-import { createPreviewDeployment, previewDeploymentDiagnostics, type PreviewDeployment } from '@/lib/preview-deployment'
+import {
+  createPreviewDeployment,
+  previewDeploymentDiagnostics,
+  type PreviewActor,
+  type PreviewDeployment,
+  type PreviewSeed,
+} from '@/lib/preview-deployment'
 
 const promptPresets = [
   { name: 'intake', label: 'Intake', description: 'Request forms, lead capture, applications, support intake, and staff review queues.', starter: 'Public request intake, typed validation, HTTP/MCP entry points, and a staff review queue.', brief: 'Build a public intake flow that collects structured requests and gives staff a review queue.' },
@@ -147,14 +156,27 @@ export default function App() {
     setDarkMode(next)
   }
 
-  const prepareProject = useCallback(async (record: ProjectRecord) => {
-    const state = createProjectState(record.manifest)
-    const deployment = await createPreviewDeployment(state.plan, { id: record.id, name: record.name }, location.origin)
-    publicTools(state)
-    return { record, state, deployment }
+  const reloadAdminPreview = useCallback(() => {
+    adminIframeRef.current?.contentWindow?.postMessage({ type: 'mantle:host-api:reload' }, location.origin)
   }, [])
 
+  const createSandboxDeployment = useCallback(async (
+    plan: ProjectState['plan'],
+    target: Pick<ProjectRecord, 'id' | 'name'>,
+  ) => createPreviewDeployment(plan, target, location.origin, {
+    entries: await loadSandboxEntries(target.id),
+    persistEntries: (entries) => saveSandboxEntries(target.id, entries),
+  }), [])
+
+  const prepareProject = useCallback(async (record: ProjectRecord) => {
+    const state = createProjectState(record.manifest)
+    const deployment = await createSandboxDeployment(state.plan, record)
+    publicTools(state)
+    return { record, state, deployment }
+  }, [createSandboxDeployment])
+
   const installProject = useCallback((record: ProjectRecord, state: ProjectState, deployment: PreviewDeployment) => {
+    const reload = currentProjectRef.current.id === record.id && projectRef.current.revision !== state.revision
     currentProjectRef.current = record
     projectRef.current = state
     previewDeploymentRef.current = deployment
@@ -162,7 +184,8 @@ export default function App() {
     setProject(state)
     setPreviewFrameError(false)
     selectProjectId(record.id)
-  }, [])
+    if (reload) queueMicrotask(reloadAdminPreview)
+  }, [reloadAdminPreview])
 
   const openProject = useCallback(async (record: ProjectRecord) => {
     try {
@@ -244,7 +267,7 @@ export default function App() {
     // A compiled Manifest can still fail to boot. Prove the preview first, then persist.
     let deployment: PreviewDeployment
     try {
-      deployment = await createPreviewDeployment(state.plan, { id: target.id, name: projectName }, location.origin)
+      deployment = await createSandboxDeployment(state.plan, { id: target.id, name: projectName })
       publicTools(state)
     } catch (error) {
       return {
@@ -276,8 +299,9 @@ export default function App() {
       document: state.document,
       manifestYaml: projectDocumentYaml(state.document),
       previewTools: publicTools(state),
+      sandboxCompatibilityDiagnostics: deployment.compatibilityDiagnostics,
     }
-  }, [installProject, persistProject])
+  }, [createSandboxDeployment, installProject, persistProject])
 
   const commitPatch = useCallback((baseRevision: number, patch: readonly Operation[], projectName: string) => (
     commitCandidate(applyProjectPatch(projectRef.current, baseRevision, patch), projectName)
@@ -340,10 +364,7 @@ export default function App() {
       try {
         const deployment = previewDeploymentRef.current
         if (!deployment) throw new Error('Sandbox runtime is not ready.')
-        const request = readHostApiRequest(event.data, {
-          projectId: currentProjectRef.current.id,
-          revision: projectRef.current.revision,
-        }, location.origin)
+        const request = readHostApiRequest(event.data, location.origin)
         const response = await deployment.fetch(request)
         const body = await response.arrayBuffer()
         port.postMessage({ ok: true, status: response.status, headers: [...response.headers], body }, [body])
@@ -383,6 +404,7 @@ export default function App() {
               ready: bootError === null,
               revision: projectRef.current.revision,
               ...(bootError === null ? {} : { diagnostics: previewDeploymentDiagnostics(bootError) }),
+              ...(deployment ? { compatibilityDiagnostics: deployment.compatibilityDiagnostics } : {}),
             },
             { id: currentProjectRef.current.id, name: currentProjectRef.current.name },
             reference,
@@ -405,9 +427,48 @@ export default function App() {
           })
         }
         if (capability.name === 'builder_call_preview_tool') {
-          assertActiveTarget({ id: currentProjectRef.current.id, revision: projectRef.current.revision }, input)
-          if (typeof input.name !== 'string' || !isMessage(input.input)) throw new TypeError('Preview tool name and input are required.')
-          return invokePreviewTool(input.name, input.input, signal)
+          return serializeMutation(async () => {
+            assertActiveTarget({ id: currentProjectRef.current.id, revision: projectRef.current.revision }, input)
+            if (typeof input.name !== 'string' || !isMessage(input.input)) throw new TypeError('Preview tool name and input are required.')
+            const result = await invokePreviewTool(input.name, input.input, signal)
+            if (publicTools(projectRef.current).some((tool) => tool.name === input.name && tool.kind === 'procedure')) reloadAdminPreview()
+            return result
+          })
+        }
+        if (capability.name === 'builder_run_smoke_test') {
+          return serializeMutation(async () => {
+            assertActiveTarget({ id: currentProjectRef.current.id, revision: projectRef.current.revision }, input)
+            const actor = readPreviewActor(input.actor)
+            const seed = readPreviewSeed(input.seed)
+            const calls = readSmokeCalls(input.calls)
+            if (input.reset !== true && input.reset !== false) throw new TypeError('reset must be a boolean.')
+            let deployment = previewDeploymentRef.current
+            if (input.reset) {
+              await clearSandboxEntries(currentProjectRef.current.id)
+              deployment = await createSandboxDeployment(projectRef.current.plan, currentProjectRef.current)
+              previewDeploymentRef.current = deployment
+            }
+            if (!deployment) throw new Error('Sandbox runtime is not ready.')
+            const seeded = await deployment.seed(seed)
+            const steps = []
+            for (const call of calls) {
+              signal?.throwIfAborted()
+              try {
+                steps.push({ name: call.name, ok: true as const, output: await deployment.invoke(call.name, call.input, signal, actor) })
+              } catch (error) {
+                steps.push({ name: call.name, ok: false as const, error: messageOf(error) })
+              }
+            }
+            reloadAdminPreview()
+            return {
+              ok: steps.every((step) => step.ok),
+              actor,
+              reset: input.reset,
+              compatibilityDiagnostics: deployment.compatibilityDiagnostics,
+              seeded: seeded.map(({ id, collection, status, data }) => ({ id, collection, status, data })),
+              steps,
+            }
+          })
         }
         throw new Error(`Unknown builder tool '${capability.name}'.`)
       },
@@ -420,7 +481,7 @@ export default function App() {
       disposed = true
       binding?.dispose()
     }
-  }, [commitCandidate, commitPatch, invokePreviewTool, projectsReady, serializeMutation])
+  }, [commitCandidate, commitPatch, createSandboxDeployment, invokePreviewTool, projectsReady, reloadAdminPreview, serializeMutation])
 
   const copyStartingPrompt = async () => {
     try {
@@ -597,9 +658,9 @@ export default function App() {
               </div>
               <div className="relative min-h-0 flex-1 overflow-hidden rounded-xl bg-background">
                 <iframe
-                  key={`${currentProject.id}:${project.revision}:${previewFrameRetry}`}
+                  key={`${currentProject.id}:${previewFrameRetry}`}
                   ref={adminIframeRef}
-                  src={`/_mantle/admin/index.html?builderProjectId=${encodeURIComponent(currentProject.id)}&builderRevision=${project.revision}`}
+                  src="/_mantle/admin/index.html"
                   title="Mantle Admin preview"
                   className="absolute inset-0 h-full w-full border-0 bg-background"
                   onLoad={() => setPreviewFrameError(false)}
@@ -881,4 +942,30 @@ function readProjectName(value: unknown): string {
   const name = value.trim()
   if (name.length === 0 || name.length > 80) throw new TypeError('projectName must be between 1 and 80 characters.')
   return name
+}
+
+function readPreviewActor(value: unknown): PreviewActor {
+  if (value === 'anonymous' || value === 'member' || value === 'owner') return value
+  throw new TypeError('actor must be anonymous, member, or owner.')
+}
+
+function readPreviewSeed(value: unknown): PreviewSeed[] {
+  if (!Array.isArray(value) || value.length > 50) throw new TypeError('seed must contain at most 50 records.')
+  return value.map((item) => {
+    if (!isMessage(item) || typeof item.collection !== 'string' || !isMessage(item.data)
+      || (item.status !== undefined && item.status !== 'draft' && item.status !== 'published')) {
+      throw new TypeError('Each seed record needs collection, data, and optional draft or published status.')
+    }
+    return { collection: item.collection, data: item.data, ...(item.status ? { status: item.status } : {}) }
+  })
+}
+
+function readSmokeCalls(value: unknown): { name: string; input: Record<string, unknown> }[] {
+  if (!Array.isArray(value) || value.length > 50) throw new TypeError('calls must contain at most 50 tool calls.')
+  return value.map((item) => {
+    if (!isMessage(item) || typeof item.name !== 'string' || !isMessage(item.input)) {
+      throw new TypeError('Each smoke call needs a name and input object.')
+    }
+    return { name: item.name, input: item.input }
+  })
 }

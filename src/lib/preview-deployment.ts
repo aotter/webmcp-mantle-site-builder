@@ -4,9 +4,10 @@ import {
   prepareDeployment,
   projectCallableCapabilities,
   type HandlerContext,
+  type EntryRow,
   type RuntimePlan,
 } from '@aotter/mantle-runtime'
-import { DiagnosticError } from '@aotter/mantle-spec'
+import { DiagnosticError, EntryDataValidator } from '@aotter/mantle-spec'
 import { Hono } from 'hono'
 
 import { MemoryMantleStorageAdapter } from './memory-storage'
@@ -14,21 +15,40 @@ import type { BuilderDiagnostic } from './project'
 
 export interface PreviewDeployment {
   fetch(request: Request): Promise<Response>
-  invoke(name: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>
+  invoke(name: string, input: Record<string, unknown>, signal?: AbortSignal, actor?: PreviewActor): Promise<unknown>
+  seed(fixtures: readonly PreviewSeed[]): Promise<readonly EntryRow[]>
+  readonly compatibilityDiagnostics: readonly BuilderDiagnostic[]
+}
+
+export type PreviewActor = 'anonymous' | 'member' | 'owner'
+
+export interface PreviewSeed {
+  readonly collection: string
+  readonly data: Record<string, unknown>
+  readonly status?: 'draft' | 'published'
 }
 
 export async function createPreviewDeployment(
   plan: RuntimePlan,
   project: { readonly id: string; readonly name: string },
   origin: string,
+  storage: {
+    readonly entries?: readonly EntryRow[]
+    readonly persistEntries?: (entries: readonly EntryRow[]) => Promise<void>
+  } = {},
 ): Promise<PreviewDeployment> {
   const env = Object.freeze({
     PUBLIC_ORIGIN: origin,
     PROJECT_ID: project.id,
     PROJECT_NAME: project.name,
   })
-  const prepared = await prepareDeployment(plan, new MemoryMantleStorageAdapter(project.name, origin), { handlerNames: [] })
+  const prepared = await prepareDeployment(
+    plan,
+    new MemoryMantleStorageAdapter(project.name, origin, storage.entries, storage.persistEntries),
+    { handlerNames: [] },
+  )
   const runtime = createMantleRuntime({ prepared })
+  const compatibilityDiagnostics = sandboxCompatibilityDiagnostics(plan, storage.entries ?? [])
   if (!runtime.siteConfig || !runtime.updateSiteSettings) throw new Error('Sandbox storage did not prepare site settings.')
   const adminRuntime: MantleAdminRuntime = {
     ...runtime,
@@ -43,20 +63,23 @@ export async function createPreviewDeployment(
     get: async () => adminRuntime,
     requestContext: () => ({ env, waitUntil }),
   })
-  const context: HandlerContext<typeof env> = {
-    user: { id: 'sandbox-member' },
-    staff: null,
-    auth: { credential: 'session', credentialId: 'sandbox-session', clientId: null, scopes: [] },
+  const contextFor = (actor: PreviewActor): HandlerContext<typeof env> => ({
+    user: actor === 'anonymous' ? null : { id: actor === 'owner' ? sandboxOwner.id : 'sandbox-member' },
+    staff: actor === 'owner' ? { id: sandboxOwner.id, role: 'owner' } : null,
+    ...(actor === 'anonymous' ? {} : { auth: { credential: 'session' as const, credentialId: 'sandbox-session', clientId: null, scopes: [] } }),
     env,
     waitUntil,
-  }
+  })
 
   return {
+    compatibilityDiagnostics,
     fetch: async (request) => app.fetch(request, env),
-    async invoke(name, input, signal) {
+    async invoke(name, input, signal, actor = 'member') {
       signal?.throwIfAborted()
-      const capability = projectCallableCapabilities(plan, { surface: 'public' }).find((item) => item.name === name)
-      if (!capability) throw new Error(`Unknown public capability '${name}'.`)
+      const capabilities = projectCallableCapabilities(plan, actor === 'owner' ? undefined : { surface: 'public' })
+      const capability = capabilities.find((item) => item.name === name)
+      if (!capability) throw new Error(`Unknown capability '${name}' for sandbox actor '${actor}'.`)
+      const context = contextFor(actor)
       if (capability.kind === 'procedure') {
         const response = await runtime.invokeTrigger({ trigger: capability.trigger, input, ctx: context })
         if (!response.ok) throw new Error(response.diagnostic.message)
@@ -74,7 +97,53 @@ export async function createPreviewDeployment(
       if (!response.ok) throw new Error(response.diagnostic.message)
       return response.result
     },
+    async seed(fixtures) {
+      const rows: EntryRow[] = []
+      const context = contextFor('owner')
+      for (const fixture of fixtures) {
+        let row = await runtime.createDraft.execute({
+          collection: fixture.collection,
+          data: fixture.data,
+          authorId: sandboxOwner.id,
+          ctx: context,
+          originalInput: fixture,
+        })
+        if (fixture.status === 'published' && row.status === 'draft') {
+          row = await runtime.requestPublish.execute({ id: row.id, ctx: context, originalInput: fixture })
+        }
+        if (fixture.status && row.status !== fixture.status) {
+          throw new Error(`Seed '${fixture.collection}' requested status '${fixture.status}' but the Schema lifecycle produced '${row.status}'.`)
+        }
+        rows.push(row)
+      }
+      return rows
+    },
   }
+}
+
+function sandboxCompatibilityDiagnostics(plan: RuntimePlan, entries: readonly EntryRow[]): BuilderDiagnostic[] {
+  const validator = new EntryDataValidator()
+  return entries.flatMap((entry) => {
+    const schema = plan.schemas[entry.collection]?.manifest
+    if (!schema) {
+      return [{
+        code: 'SANDBOX_SCHEMA_MISSING',
+        phase: 'runtime' as const,
+        severity: 'warning' as const,
+        path: `/sandbox/${entry.collection}/${entry.id}`,
+        message: `Sandbox entry '${entry.id}' belongs to removed Schema '${entry.collection}'.`,
+        suggestion: 'Run builder_run_smoke_test with reset: true and seed data that matches the current Manifest.',
+      }]
+    }
+    return validator.validate(schema, entry.data, { partial: entry.status === 'draft' }).map((diagnostic) => ({
+      code: `SANDBOX_${diagnostic.code}`,
+      phase: diagnostic.phase,
+      severity: 'warning' as const,
+      path: `/sandbox/${entry.collection}/${entry.id}${diagnostic.path}`,
+      message: `Sandbox entry '${entry.id}' no longer matches Schema '${entry.collection}': ${diagnostic.message}`,
+      suggestion: 'Run builder_run_smoke_test with reset: true and seed data that matches the current Manifest.',
+    }))
+  })
 }
 
 const bootSuggestion = 'The Manifest compiles but cannot boot in the Builder preview runtime. Revise the atoms named above and apply the patch again.'
@@ -105,14 +174,16 @@ export function previewDeploymentDiagnostics(error: unknown): BuilderDiagnostic[
   }]
 }
 
+const sandboxOwner = { id: 'sandbox-owner', githubLogin: 'sandbox' } as const
+
 const mockAdminAuth: AdminAuth = {
   basePath: '/api/auth',
   handler: async () => new Response(null, { status: 404 }),
   methods: [],
-  getSession: async () => ({ session: { id: 'sandbox-session' }, user: { id: 'sandbox-owner', githubLogin: 'sandbox' } }),
+  getSession: async () => ({ session: { id: 'sandbox-session' }, user: sandboxOwner }),
   getUserRole: async () => 'owner',
   listUsers: async () => [{
-    id: 'sandbox-owner',
+    id: sandboxOwner.id,
     email: 'owner@sandbox.invalid',
     name: 'Sandbox owner',
     role: 'owner',

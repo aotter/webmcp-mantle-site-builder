@@ -53,17 +53,26 @@ export class MemoryMantleStorageAdapter implements MantleStorageAdapter {
   readonly nativeViewDialects = [] as const
   private readonly projectName: string
   private readonly origin: string
+  private readonly initialEntries: readonly EntryRow[]
+  private readonly persistEntries?: (entries: readonly EntryRow[]) => Promise<void>
 
-  constructor(projectName: string, origin: string) {
+  constructor(
+    projectName: string,
+    origin: string,
+    initialEntries: readonly EntryRow[] = [],
+    persistEntries?: (entries: readonly EntryRow[]) => Promise<void>,
+  ) {
     this.projectName = projectName
     this.origin = origin
+    this.initialEntries = initialEntries
+    this.persistEntries = persistEntries
   }
 
   async prepare(plan: RuntimePlan): Promise<PreparedMantleStorage> {
     const schemas = new Map<string, SchemaManifest>(
       Object.values(plan.schemas).map((schema) => [schema.name, schema.manifest]),
     )
-    const entries = new MemoryEntryRepository(schemas)
+    const entries = new MemoryEntryRepository(schemas, this.initialEntries, this.persistEntries)
     const siteConfig = new MemorySiteConfig(this.projectName, this.origin)
     return {
       entries,
@@ -75,11 +84,18 @@ export class MemoryMantleStorageAdapter implements MantleStorageAdapter {
 }
 
 class MemoryEntryRepository implements EntryRepository, EntryReader {
-  private readonly rows = new Map<string, EntryRow>()
+  private rows: Map<string, EntryRow>
   private readonly schemas: ReadonlyMap<string, SchemaManifest>
+  private readonly persistEntries?: (entries: readonly EntryRow[]) => Promise<void>
 
-  constructor(schemas: ReadonlyMap<string, SchemaManifest>) {
+  constructor(
+    schemas: ReadonlyMap<string, SchemaManifest>,
+    initialEntries: readonly EntryRow[],
+    persistEntries?: (entries: readonly EntryRow[]) => Promise<void>,
+  ) {
     this.schemas = schemas
+    this.rows = new Map(initialEntries.map((row) => [row.id, structuredClone(row)]))
+    this.persistEntries = persistEntries
   }
 
   async create(args: CreateEntryArgs): Promise<EntryRow> {
@@ -96,7 +112,7 @@ class MemoryEntryRepository implements EntryRepository, EntryReader {
       createdAt: args.now,
       updatedAt: args.now,
     }
-    this.rows.set(row.id, row)
+    await this.commit(new Map(this.rows).set(row.id, row))
     return structuredClone(row)
   }
 
@@ -117,7 +133,7 @@ class MemoryEntryRepository implements EntryRepository, EntryReader {
       version: row.version + 1,
       updatedAt: args.now,
     }
-    this.rows.set(row.id, next)
+    await this.commit(new Map(this.rows).set(row.id, next))
     return structuredClone(next)
   }
 
@@ -126,7 +142,10 @@ class MemoryEntryRepository implements EntryRepository, EntryReader {
     if (!row || row.collection !== args.collection) return { removed: false }
     if (row.version !== args.expectedVersion) throw new EntryVersionConflict(args.id, args.expectedVersion, row.version)
     if (row.status !== args.expectedStatus) throw new EntryStatusConflict(args.id, args.expectedStatus, row.status)
-    return { removed: this.rows.delete(args.id) }
+    const next = new Map(this.rows)
+    const removed = next.delete(args.id)
+    if (removed) await this.commit(next)
+    return { removed }
   }
 
   async transitionStatus(args: TransitionStatusArgs): Promise<EntryRow> {
@@ -139,7 +158,7 @@ class MemoryEntryRepository implements EntryRepository, EntryReader {
       throw new EntryStatusConflict(args.id, args.expectedStatus, row.status)
     }
     const next = { ...row, status: args.to, version: row.version + 1, updatedAt: args.now }
-    this.rows.set(row.id, next)
+    await this.commit(new Map(this.rows).set(row.id, next))
     return structuredClone(next)
   }
 
@@ -242,6 +261,11 @@ class MemoryEntryRepository implements EntryRepository, EntryReader {
 
   allRows(collection?: string): EntryRow[] {
     return [...this.rows.values()].filter((row) => collection === undefined || row.collection === collection)
+  }
+
+  private async commit(next: Map<string, EntryRow>): Promise<void> {
+    await this.persistEntries?.([...next.values()])
+    this.rows = next
   }
 
   private assertUniqueIndexes(collection: string, data: Record<string, unknown>, excludeId?: string): void {

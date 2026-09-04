@@ -491,11 +491,49 @@ export const builderCapabilities = [
     required: ['projectId', 'baseRevision', 'name', 'input'],
     additionalProperties: false,
   }),
+  publicProcedureCapability('builder_run_smoke_test', 'Reset or seed the sandbox, then call projected capabilities as a mock identity.', {
+    type: 'object',
+    properties: {
+      projectId: { type: 'string', minLength: 1 },
+      baseRevision: { type: 'integer', minimum: 1 },
+      actor: { type: 'string', enum: ['anonymous', 'member', 'owner'] },
+      reset: { type: 'boolean' },
+      seed: {
+        type: 'array',
+        maxItems: 50,
+        items: {
+          type: 'object',
+          properties: {
+            collection: { type: 'string', minLength: 1 },
+            status: { type: 'string', enum: ['draft', 'published'] },
+            data: { type: 'object', additionalProperties: true },
+          },
+          required: ['collection', 'data'],
+          additionalProperties: false,
+        },
+      },
+      calls: {
+        type: 'array',
+        maxItems: 50,
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', minLength: 1 },
+            input: { type: 'object', additionalProperties: true },
+          },
+          required: ['name', 'input'],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ['projectId', 'baseRevision', 'actor', 'reset', 'seed', 'calls'],
+    additionalProperties: false,
+  }),
 ]
 
 export function getStarted(
   state: ProjectState,
-  preview: { ready: boolean; revision: number; diagnostics?: BuilderDiagnostic[] },
+  preview: { ready: boolean; revision: number; diagnostics?: BuilderDiagnostic[]; compatibilityDiagnostics?: readonly BuilderDiagnostic[] },
   project = { id: '', name: 'Untitled project' },
   reference?: { section: ReferenceSection; content: string },
 ) {
@@ -547,6 +585,7 @@ export function getStarted(
       blank: { name: 'builder_apply_manifest_patch', required: ['projectId', 'baseRevision', 'projectName', 'patch'] },
       patch: { name: 'builder_apply_manifest_patch', required: ['projectId', 'baseRevision', 'projectName', 'patch'] },
       preview: { name: 'builder_call_preview_tool', required: ['projectId', 'baseRevision', 'name', 'input'] },
+      smokeTest: { name: 'builder_run_smoke_test', required: ['projectId', 'baseRevision', 'actor', 'reset', 'seed', 'calls'] },
     },
     project: { ...project, ...projectStateSummary(state), document: state.document },
     preview: {
@@ -554,6 +593,7 @@ export function getStarted(
       appliedRevision: preview.revision,
       identity: { kind: 'mock-member', userId: 'sandbox-member', credential: 'session' },
       tools: publicTools(state),
+      compatibilityDiagnostics: preview.compatibilityDiagnostics ?? [],
       ...(preview.diagnostics?.length
         ? { error: preview.diagnostics[0]!.message, diagnostics: preview.diagnostics }
         : {}),
@@ -573,9 +613,9 @@ export function proposePreset(state: ProjectState, name: PresetName, baseRevisio
 
 export function startingPrompt(type: PresetName | 'blank', brief: string) {
   if (type === 'blank') {
-    return `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first.\n2. Interview me about actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. After confirmation, choose a concise projectName and make one complete builder_apply_manifest_patch call with { projectId, baseRevision: revision, projectName, patch }.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then test a projected public capability with builder_call_preview_tool using { projectId, baseRevision: currentRevision, name, input }.\n\nStarting context:\n${brief.trim()}`
+    return `Use the WebMCP tools on this page to design a Mantle service with me.\n\n1. Call builder_get_started first.\n2. Interview me about actors, data, operations, permissions, and HTTP, MCP, or WebMCP entry points.\n3. Summarize the proposed Schema, View, Procedure, and Trigger model and wait for my confirmation.\n4. After confirmation, choose a concise projectName and make one complete builder_apply_manifest_patch call with { projectId, baseRevision: revision, projectName, patch }.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then run builder_run_smoke_test with representative seed data and calls.\n\nStarting context:\n${brief.trim()}`
   }
-  return `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Choose a concise projectName, then call builder_apply_preset with { projectId, baseRevision: revision, preset: "${type}", projectName }. The host supplies the premade Manifest.\n3. Discuss how the preset should fit my actors, data, operations, permissions, and entry points. Summarize the proposed changes and wait for my confirmation.\n4. After confirmation, call builder_apply_manifest_patch with { projectId, baseRevision: currentRevision, projectName, patch } when changes are needed.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then test a projected public capability with builder_call_preview_tool using { projectId, baseRevision: currentRevision, name, input }.\n\nService brief:\n${brief.trim()}`
+  return `Use the WebMCP tools on this page to build the service below.\n\n1. Call builder_get_started first.\n2. Choose a concise projectName, then call builder_apply_preset with { projectId, baseRevision: revision, preset: "${type}", projectName }. The host supplies the premade Manifest.\n3. Discuss how the preset should fit my actors, data, operations, permissions, and entry points. Summarize the proposed changes and wait for my confirmation.\n4. After confirmation, call builder_apply_manifest_patch with { projectId, baseRevision: currentRevision, projectName, patch } when changes are needed.\n5. If validation fails, correct the patch against the unchanged currentRevision. Then run builder_run_smoke_test with representative seed data and calls.\n\nService brief:\n${brief.trim()}`
 }
 
 export function publicTools(state: Pick<ProjectState, 'plan'>) {

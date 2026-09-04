@@ -6,8 +6,6 @@ const allowedPaths = ['/admin/api/', '/api/auth/']
 export interface HostApiMessage {
   protocolVersion: 1
   type: 'mantle:host-api:request'
-  projectId: string
-  revision: number
   request: {
     url: string
     method: string
@@ -26,13 +24,9 @@ export function isTrustedAdminSource(
 
 export function readHostApiRequest(
   value: unknown,
-  active: { readonly projectId: string; readonly revision: number },
   origin: string,
 ): Request {
   if (!isHostApiMessage(value)) throw new TypeError('Admin iframe sent an invalid host request.')
-  if (value.projectId !== active.projectId || value.revision !== active.revision) {
-    throw new TypeError('Admin iframe request is stale.')
-  }
 
   const url = new URL(value.request.url)
   const method = value.request.method.toUpperCase()
@@ -57,9 +51,7 @@ export function readHostApiRequest(
 function isHostApiMessage(value: unknown): value is HostApiMessage {
   if (!isRecord(value) || value.protocolVersion !== 1 || value.type !== 'mantle:host-api:request' || !isRecord(value.request)) return false
   const request = value.request
-  return typeof value.projectId === 'string'
-    && Number.isInteger(value.revision)
-    && typeof request.url === 'string'
+  return typeof request.url === 'string'
     && typeof request.method === 'string'
     && Array.isArray(request.headers)
     && request.headers.every((header) => Array.isArray(header) && header.length === 2 && header.every((part) => typeof part === 'string'))

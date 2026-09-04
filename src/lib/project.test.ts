@@ -20,7 +20,7 @@ import {
   publicTools,
   startingPrompt,
 } from './builder'
-import { createPreviewDeployment, previewDeploymentDiagnostics } from './preview-deployment'
+import { createPreviewDeployment, previewDeploymentDiagnostics, type PreviewDeployment } from './preview-deployment'
 
 const fixtureDocument: ProjectDocument = {
   schemas: {
@@ -126,10 +126,12 @@ describe('Builder authoring contract', () => {
       'builder_apply_preset',
       'builder_apply_manifest_patch',
       'builder_call_preview_tool',
+      'builder_run_smoke_test',
     ])
     expect(schemas.builder_apply_preset?.required).toEqual(['projectId', 'baseRevision', 'preset', 'projectName'])
     expect(schemas.builder_apply_manifest_patch?.required).toEqual(['projectId', 'baseRevision', 'projectName', 'patch'])
     expect(schemas.builder_call_preview_tool?.required).toEqual(['projectId', 'baseRevision', 'name', 'input'])
+    expect(schemas.builder_run_smoke_test?.required).toEqual(['projectId', 'baseRevision', 'actor', 'reset', 'seed', 'calls'])
 
     for (const preset of presetNames) {
       const prompt = startingPrompt(preset, 'Build it.')
@@ -139,6 +141,7 @@ describe('Builder authoring contract', () => {
       expect(prompt).toContain('baseRevision: revision')
       expect(prompt).toContain('projectName')
       expect(prompt).toContain('wait for my confirmation')
+      expect(prompt).toContain('builder_run_smoke_test')
       expect(prompt).not.toMatch(/starter/i)
     }
     const blank = startingPrompt('blank', 'Build it.')
@@ -171,6 +174,39 @@ describe('Builder authoring contract', () => {
     const queue = await deployment.fetch(new Request('https://builder.test/admin/api/views/recent-requests'))
     expect(queue.status).toBe(200)
     await expect(queue.json()).resolves.toMatchObject({ data: { rows: [expect.objectContaining({ name: 'Ada' })] } })
+  })
+
+  it('persists seeded sandbox data across preview deployments', async () => {
+    const state = createProjectState(fixtureDocument)
+    let entries = [] as Awaited<ReturnType<PreviewDeployment['seed']>>
+    const storage = () => ({
+      entries,
+      persistEntries: async (next: typeof entries) => { entries = structuredClone(next) },
+    })
+    const first = await createPreviewDeployment(state.plan, { id: 'test', name: 'Catalog' }, 'https://builder.test', storage())
+    await first.seed([{ collection: 'items', status: 'published', data: { name: 'Seeded' } }])
+
+    const second = await createPreviewDeployment(state.plan, { id: 'test', name: 'Catalog' }, 'https://builder.test', storage())
+    await expect(second.invoke('query_view_items', {}, undefined, 'anonymous')).resolves.toMatchObject({
+      rows: [expect.objectContaining({ status: 'published' })],
+    })
+
+    const changed = structuredClone(fixtureDocument)
+    changed.schemas.items = {
+      ...changed.schemas.items!,
+      spec: {
+        ...changed.schemas.items!.spec,
+        schema: {
+          type: 'object',
+          properties: { name: { type: 'integer' } },
+          required: ['name'],
+        },
+      },
+    }
+    const incompatible = await createPreviewDeployment(createProjectState(changed).plan, { id: 'test', name: 'Catalog' }, 'https://builder.test', storage())
+    expect(incompatible.compatibilityDiagnostics).toEqual([
+      expect.objectContaining({ code: 'SANDBOX_INPUT_VALIDATION_FAILED', severity: 'warning' }),
+    ])
   })
 
   it('reports a failed preview boot as actionable diagnostics instead of an opaque rejection', async () => {
