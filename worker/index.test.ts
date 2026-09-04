@@ -23,3 +23,11 @@ test('admin api requests are left to the host bridge', async () => {
 test('health endpoint still answers', async () => {
   expect((await get('/api/health')).status).toBe(200)
 })
+
+test('MCP routes fail with an actionable preview diagnostic', async () => {
+  for (const path of ['/mcp', '/mcp/staff']) {
+    const response = await get(path)
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toMatchObject({ error: 'preview_connection_unavailable' })
+  }
+})

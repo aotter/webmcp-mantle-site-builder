@@ -16,6 +16,13 @@ export default {
         service: "webmcp-mantle-site-builder",
       });
     }
+
+    if (url.pathname === "/mcp" || url.pathname === "/mcp/staff") {
+      return Response.json({
+        error: "preview_connection_unavailable",
+        message: "External MCP connections are unavailable in the Builder sandbox. Deploy the generated project first.",
+      }, { status: 409, headers: { "Cache-Control": "no-store" } });
+    }
 		return new Response(null, { status: 404 });
   },
 } satisfies ExportedHandler<Env>;

@@ -1,6 +1,6 @@
 import { bindWebMcp, type WebMcpBinding } from '@aotter/mantle-web/webmcp'
 import type { Operation } from 'fast-json-patch'
-import { ArrowLeft, ArrowRight, Bot, Braces, Check, ChevronDown, Cloud, Copy, Download, ExternalLink, FileJson2, GitBranch, Monitor, Moon, Plus, Rocket, Smartphone, Sparkles, Sun, Trash2, X } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Bot, Braces, Check, ChevronDown, Cloud, CloudOff, Copy, Download, ExternalLink, FileJson2, GitBranch, Monitor, Moon, Plus, Rocket, Smartphone, Sparkles, Sun, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -46,7 +46,9 @@ import {
   mantleVersion,
   presetNames,
   proposePreset,
+  previewAdminContractRoute,
   previewAdminRoute,
+  previewCollectionRoute,
   previewTools,
   referenceSectionNames,
   runtimeSourceRevision,
@@ -113,7 +115,7 @@ export default function App() {
   const [previewViewport, setPreviewViewport] = useState<PreviewViewport>(() => new URLSearchParams(location.search).get('viewport') === 'mobile' ? 'mobile' : 'desktop')
   const [previewFrameError, setPreviewFrameError] = useState(false)
   const [previewFrameRetry, setPreviewFrameRetry] = useState(0)
-  const [previewSession, setPreviewSession] = useState<{ actor: PreviewActor; action?: string }>({ actor: 'member' })
+  const [previewSession, setPreviewSession] = useState<{ actor?: PreviewActor; action?: string }>({})
   const currentProjectRef = useRef(currentProject)
   const projectRef = useRef(project)
   const adminIframeRef = useRef<HTMLIFrameElement>(null)
@@ -180,10 +182,15 @@ export default function App() {
     })
   }, [])
 
+  const showAdminPreviewStep = useCallback(async (path: string) => {
+    await navigateAdminPreview(path)
+    await new Promise((resolve) => window.setTimeout(resolve, 500))
+  }, [navigateAdminPreview])
+
   const createSandboxDeployment = useCallback(async (
     plan: ProjectState['plan'],
     target: Pick<ProjectRecord, 'id' | 'name'>,
-  ) => createPreviewDeployment(plan, target, location.origin, {
+  ) => createPreviewDeployment(plan, target, {
     entries: await loadSandboxEntries(target.id),
     persistEntries: (entries) => saveSandboxEntries(target.id, entries),
   }), [])
@@ -445,7 +452,7 @@ export default function App() {
             assertActiveTarget({ id: currentProjectRef.current.id, revision: projectRef.current.revision }, input)
             const actor = readPreviewActor(input.actor)
             const reset = input.reset === undefined ? false : readBoolean(input.reset, 'reset')
-            const follow = input.follow === undefined ? true : readBoolean(input.follow, 'follow')
+            const navigation = readPreviewNavigation(input.navigation)
             const seed = readPreviewSeed(input.seed ?? [])
             const calls = readPreviewCalls(input.calls ?? [])
             const observe = readPreviewObservations(input.observe ?? [])
@@ -460,35 +467,44 @@ export default function App() {
               }
               if (!deployment) throw new Error('Sandbox runtime is not ready.')
               const seeded = await deployment.seed(seed)
-              if (follow && seed.length > 0) await navigateAdminPreview(`/admin/c/${encodeURIComponent(seed.at(-1)!.collection)}`)
+              const lastSeed = seeded.at(-1)
+              let resultRoute = lastSeed ? previewCollectionRoute(lastSeed.collection, lastSeed.id, lastSeed.status) : undefined
+              if (navigation === 'walkthrough' && resultRoute) await showAdminPreviewStep(resultRoute)
               const steps = []
               for (const call of calls) {
                 signal?.throwIfAborted()
                 setPreviewSession({ actor, action: call.name })
-                const route = previewAdminRoute(projectRef.current, call.name)
-                if (follow) await navigateAdminPreview(route)
+                if (navigation === 'walkthrough') await showAdminPreviewStep(previewAdminContractRoute(projectRef.current, call.name))
                 try {
                   const output = await deployment.invoke(call.name, call.input, signal, actor)
                   steps.push({ name: call.name, ok: true as const, output })
-                  if (follow) await navigateAdminPreview(previewAdminRoute(projectRef.current, call.name, output))
+                  resultRoute = previewAdminRoute(projectRef.current, call.name, output)
+                  if (navigation === 'walkthrough') await showAdminPreviewStep(resultRoute)
                 } catch (error) {
                   steps.push({ name: call.name, ok: false as const, error: messageOf(error) })
                 }
               }
-              if (!follow) reloadAdminPreview()
               const after = observe.length === 0 ? [] : observePreviewEntries(await loadSandboxEntries(currentProjectRef.current.id), observe)
+              const focused = observe.find(({ focus }) => focus)
+              if (focused) {
+                const entry = focused.id ? after.find(({ collection, id }) => collection === focused.collection && id === focused.id) : undefined
+                resultRoute = previewCollectionRoute(focused.collection, focused.id, entry?.status)
+              }
+              if (navigation === 'result' && resultRoute) await navigateAdminPreview(resultRoute)
+              if (navigation === 'walkthrough' && focused && resultRoute) await navigateAdminPreview(resultRoute)
+              if (navigation === 'none') reloadAdminPreview()
               return {
                 ok: steps.every((step) => step.ok),
                 actor,
                 reset,
-                follow,
+                navigation,
                 compatibilityDiagnostics: deployment.compatibilityDiagnostics,
                 seeded: seeded.map(({ id, collection, status, data }) => ({ id, collection, status, data })),
                 steps,
                 observations: { before, after },
               }
             } finally {
-              setPreviewSession({ actor })
+              setPreviewSession({})
             }
           })
         }
@@ -503,7 +519,7 @@ export default function App() {
       disposed = true
       binding?.dispose()
     }
-  }, [commitCandidate, commitPatch, createSandboxDeployment, navigateAdminPreview, projectsReady, reloadAdminPreview, serializeMutation])
+  }, [commitCandidate, commitPatch, createSandboxDeployment, navigateAdminPreview, projectsReady, reloadAdminPreview, serializeMutation, showAdminPreviewStep])
 
   const copyStartingPrompt = async () => {
     try {
@@ -667,9 +683,11 @@ export default function App() {
           {hasProject && <div className="min-h-0 flex-1 overflow-auto bg-muted/35 p-2 sm:p-3">
             <div className={`mx-auto flex h-full flex-col overflow-hidden rounded-2xl border border-primary/35 bg-secondary p-1.5 text-secondary-foreground shadow-2xl shadow-primary/10 transition-[width] duration-200 motion-reduce:transition-none ${previewViewport === 'mobile' ? 'w-[min(402px,100%)]' : 'w-full'}`}>
               <div className="flex h-9 shrink-0 items-center gap-2 px-2">
-                <span className="text-xs font-semibold">Preview</span>
-                <span className="text-xs text-muted-foreground">Admin · Acting as {previewSession.actor}</span>
-                {previewSession.action && <Badge variant="outline" className="max-w-48 truncate" aria-live="polite"><Bot className="size-3 animate-pulse motion-reduce:animate-none" /> {previewSession.action}</Badge>}
+                <span className="text-xs font-semibold">Preview sandbox</span>
+                <Badge variant="outline" className="border-amber-500/35 bg-amber-500/10 text-amber-800 dark:text-amber-300" aria-label="External MCP connections are available after deployment" title="External MCP connections are unavailable in the Builder sandbox">
+                  <CloudOff /> MCP connects after deploy
+                </Badge>
+                {previewSession.action && <Badge variant="outline" className="max-w-52 truncate" aria-live="polite"><Bot className="size-3 animate-pulse motion-reduce:animate-none" /> Testing as <span className="capitalize">{previewSession.actor}</span> · {previewSession.action}</Badge>}
                 <div className="ml-auto flex items-center rounded-lg bg-background/35 p-0.5" role="group" aria-label="Preview viewport">
                   <Button variant="ghost" size="sm" className={previewViewport === 'desktop' ? 'bg-background text-foreground shadow-sm hover:bg-background' : 'text-muted-foreground hover:bg-background/60 hover:text-foreground'} aria-pressed={previewViewport === 'desktop'} onClick={() => setPreviewViewport('desktop')}>
                   <Monitor /> <span className="hidden sm:inline">Desktop</span>
@@ -972,6 +990,14 @@ function readPreviewActor(value: unknown): PreviewActor {
   throw new TypeError('actor must be anonymous, member, or owner.')
 }
 
+type PreviewNavigation = 'none' | 'result' | 'walkthrough'
+
+function readPreviewNavigation(value: unknown): PreviewNavigation {
+  if (value === undefined) return 'none'
+  if (value === 'none' || value === 'result' || value === 'walkthrough') return value
+  throw new TypeError('navigation must be none, result, or walkthrough.')
+}
+
 function readPreviewSeed(value: unknown): PreviewSeed[] {
   if (!Array.isArray(value) || value.length > 50) throw new TypeError('seed must contain at most 50 records.')
   return value.map((item) => {
@@ -995,14 +1021,17 @@ function readPreviewCalls(value: unknown): { name: string; input: Record<string,
 
 function readPreviewObservations(value: unknown): PreviewObservation[] {
   if (!Array.isArray(value) || value.length > 10) throw new TypeError('observe must contain at most 10 entry selectors.')
-  return value.map((item) => {
+  const observations = value.map((item) => {
     if (!isMessage(item) || typeof item.collection !== 'string' || item.collection.length === 0
       || (item.id !== undefined && (typeof item.id !== 'string' || item.id.length === 0))
-      || (item.limit !== undefined && (!Number.isInteger(item.limit) || (item.limit as number) < 1 || (item.limit as number) > 100))) {
-      throw new TypeError('Each observation needs collection, optional id, and an optional limit from 1 to 100.')
+      || (item.limit !== undefined && (!Number.isInteger(item.limit) || (item.limit as number) < 1 || (item.limit as number) > 100))
+      || (item.focus !== undefined && typeof item.focus !== 'boolean')) {
+      throw new TypeError('Each observation needs collection, optional id, optional limit from 1 to 100, and optional boolean focus.')
     }
-    return { collection: item.collection, ...(item.id ? { id: item.id as string } : {}), ...(item.limit ? { limit: item.limit as number } : {}) }
+    return { collection: item.collection, ...(item.id ? { id: item.id as string } : {}), ...(item.limit ? { limit: item.limit as number } : {}), ...(item.focus ? { focus: true } : {}) }
   })
+  if (observations.filter(({ focus }) => focus).length > 1) throw new TypeError('Only one observation can receive focus.')
+  return observations
 }
 
 function readBoolean(value: unknown, name: string): boolean {

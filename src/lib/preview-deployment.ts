@@ -13,6 +13,8 @@ import { Hono } from 'hono'
 import { MemoryMantleStorageAdapter } from './memory-storage'
 import type { BuilderDiagnostic } from './project'
 
+export const previewConnectionOrigin = 'https://deploy-first.invalid'
+
 export interface PreviewDeployment {
   fetch(request: Request): Promise<Response>
   invoke(name: string, input: Record<string, unknown>, signal?: AbortSignal, actor?: PreviewActor): Promise<unknown>
@@ -32,6 +34,7 @@ export interface PreviewObservation {
   readonly collection: string
   readonly id?: string
   readonly limit?: number
+  readonly focus?: boolean
 }
 
 export function observePreviewEntries(entries: readonly EntryRow[], observations: readonly PreviewObservation[]): EntryRow[] {
@@ -47,20 +50,19 @@ export function observePreviewEntries(entries: readonly EntryRow[], observations
 export async function createPreviewDeployment(
   plan: RuntimePlan,
   project: { readonly id: string; readonly name: string },
-  origin: string,
   storage: {
     readonly entries?: readonly EntryRow[]
     readonly persistEntries?: (entries: readonly EntryRow[]) => Promise<void>
   } = {},
 ): Promise<PreviewDeployment> {
   const env = Object.freeze({
-    PUBLIC_ORIGIN: origin,
+    PUBLIC_ORIGIN: previewConnectionOrigin,
     PROJECT_ID: project.id,
     PROJECT_NAME: project.name,
   })
   const prepared = await prepareDeployment(
     plan,
-    new MemoryMantleStorageAdapter(project.name, origin, storage.entries, storage.persistEntries),
+    new MemoryMantleStorageAdapter(project.name, previewConnectionOrigin, storage.entries, storage.persistEntries),
     { handlerNames: [] },
   )
   const runtime = createMantleRuntime({ prepared })

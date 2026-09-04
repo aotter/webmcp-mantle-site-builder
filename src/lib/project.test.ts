@@ -16,7 +16,9 @@ import {
   builderCapabilities,
   getStarted,
   presetNames,
+  previewAdminContractRoute,
   previewAdminRoute,
+  previewCollectionRoute,
   proposePreset,
   publicTools,
   previewTools,
@@ -144,6 +146,9 @@ describe('Builder authoring contract', () => {
     expect(schemas.builder_apply_manifest_patch?.required).toEqual(['projectId', 'baseRevision', 'projectName', 'patch'])
     expect(schemas.builder_execute_preview?.required).toEqual(['projectId', 'baseRevision', 'actor'])
     expect(schemas.builder_execute_preview?.properties).toHaveProperty('observe')
+    expect(schemas.builder_execute_preview?.properties).toHaveProperty('navigation')
+    expect(schemas.builder_execute_preview?.properties?.navigation).toEqual(expect.objectContaining({ default: 'none' }))
+    expect(schemas.builder_execute_preview?.properties).not.toHaveProperty('follow')
 
     for (const preset of presetNames) {
       const prompt = startingPrompt(preset, 'Build it.')
@@ -154,6 +159,8 @@ describe('Builder authoring contract', () => {
       expect(prompt).toContain('projectName')
       expect(prompt).toContain('wait for my confirmation')
       expect(prompt).toContain('builder_execute_preview')
+      expect(prompt).toContain('offer a guided tour')
+      expect(prompt).toContain('navigation: "walkthrough"')
       expect(prompt).not.toMatch(/starter/i)
     }
     const blank = startingPrompt('blank', 'Build it.')
@@ -165,10 +172,13 @@ describe('Builder authoring contract', () => {
 
   it('maps preview capabilities to stable Admin routes', () => {
     const state = accept(proposePreset(createProjectState(initialProjectDocument), 'intake', 1))
+    expect(previewAdminContractRoute(state, 'submit_request')).toBe('/admin/dev/logic?selected=Trigger%3Asubmit-request-mcp&tab=contract')
+    expect(previewAdminContractRoute(state, 'query_view_recent_requests')).toBe('/admin/dev/model?selected=View%3Arecent-requests')
     expect(previewAdminRoute(state, 'submit_request')).toBe('/admin/c/requests')
-    expect(previewAdminRoute(state, 'submit_request', { id: 'request/1' })).toBe('/admin/c/requests/request%2F1')
+    expect(previewAdminRoute(state, 'submit_request', { id: 'request/1', status: 'draft' })).toBe('/admin/c/requests/request%2F1?status=draft')
     expect(previewAdminRoute(state, 'query_view_recent_requests')).toBe('/admin/views/recent-requests')
     expect(previewAdminRoute(state, 'missing')).toBe('/admin/dev/docs?tab=mcp')
+    expect(previewCollectionRoute('sales/orders', 'order/1', 'published')).toBe('/admin/c/sales%2Forders/order%2F1?status=published')
   })
 
   it('keeps Blank as exactly four empty atom groups', () => {
@@ -177,7 +187,13 @@ describe('Builder authoring contract', () => {
 
   it('serves Admin and invokes public tools through one host runtime', async () => {
     const state = accept(proposePreset(createProjectState(initialProjectDocument), 'intake', 1))
-    const deployment = await createPreviewDeployment(state.plan, { id: 'test', name: 'Customer intake' }, 'https://builder.test')
+    const deployment = await createPreviewDeployment(state.plan, { id: 'test', name: 'Customer intake' })
+
+    const site = await deployment.fetch(new Request('https://builder.test/admin/api/site'))
+    await expect(site.json()).resolves.toMatchObject({
+      publicUrl: 'https://deploy-first.invalid',
+      mcpUrl: 'https://deploy-first.invalid/mcp/staff',
+    })
 
     const developer = await deployment.fetch(new Request('https://builder.test/admin/api/developer-console'))
     expect(developer.status).toBe(200)
@@ -203,10 +219,10 @@ describe('Builder authoring contract', () => {
       entries,
       persistEntries: async (next: typeof entries) => { entries = structuredClone(next) },
     })
-    const first = await createPreviewDeployment(state.plan, { id: 'test', name: 'Catalog' }, 'https://builder.test', storage())
+    const first = await createPreviewDeployment(state.plan, { id: 'test', name: 'Catalog' }, storage())
     await first.seed([{ collection: 'items', status: 'published', data: { name: 'Seeded' } }])
 
-    const second = await createPreviewDeployment(state.plan, { id: 'test', name: 'Catalog' }, 'https://builder.test', storage())
+    const second = await createPreviewDeployment(state.plan, { id: 'test', name: 'Catalog' }, storage())
     await expect(second.invoke('query_view_items', {}, undefined, 'anonymous')).resolves.toMatchObject({
       rows: [expect.objectContaining({ status: 'published' })],
     })
@@ -223,7 +239,7 @@ describe('Builder authoring contract', () => {
         },
       },
     }
-    const incompatible = await createPreviewDeployment(createProjectState(changed).plan, { id: 'test', name: 'Catalog' }, 'https://builder.test', storage())
+    const incompatible = await createPreviewDeployment(createProjectState(changed).plan, { id: 'test', name: 'Catalog' }, storage())
     expect(incompatible.compatibilityDiagnostics).toEqual([
       expect.objectContaining({ code: 'SANDBOX_INPUT_VALIDATION_FAILED', severity: 'warning' }),
     ])
@@ -244,7 +260,7 @@ describe('Builder authoring contract', () => {
   })
 
   it('reports a failed preview boot as actionable diagnostics instead of an opaque rejection', async () => {
-    const boot = await createPreviewDeployment({} as never, { id: 'test', name: 'Broken' }, 'https://builder.test')
+    const boot = await createPreviewDeployment({} as never, { id: 'test', name: 'Broken' })
       .then(() => null, (error: unknown) => error)
     expect(boot).not.toBeNull()
 
@@ -277,7 +293,7 @@ describe('Builder authoring contract', () => {
       },
     }
     const state = createProjectState(document)
-    await expect(createPreviewDeployment(state.plan, { id: 'test', name: 'Custom' }, 'https://builder.test')).rejects.toThrow()
+    await expect(createPreviewDeployment(state.plan, { id: 'test', name: 'Custom' })).rejects.toThrow()
   })
 
   it('serializes queued mutations so only one commits against a revision', async () => {
